@@ -345,6 +345,7 @@ extern pointer_data * process_list;
 extern function_struc_ptr global_func_stack;
 extern int * global_sample_count, total_sample_count;
 extern double *global_multiplex_correction, uop_issue_rate;
+extern char *gooda_dir;
 
 function_struc_ptr function_struc_create();
 source_struc_ptr source_struc_create();

@@ -70,6 +70,7 @@ event_name_struc_ptr event_list;
 int family, model;
 char *arch, *cpu_desc;
 int min_id_event=-1, max_id_event=-1;
+char *gooda_dir = GOODA_DIR;
 
 int num_lbr;
 typedef struct lbr_record_struc{

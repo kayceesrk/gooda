@@ -1637,7 +1637,7 @@ increment_return(mmap_struc_ptr this_mmap, uint64_t source, uint64_t destination
 	hash_data *this_hash_array;
 	branch_struc_ptr this_return;
 
-	uint64_t rva,rva1,tmp, four_hundredK = 0x400000;
+	uint64_t rva,target_rva,rva1,tmp, four_hundredK = 0x400000;
 	double val;
 	int index;
 	int offset, size;
@@ -1678,6 +1678,7 @@ increment_return(mmap_struc_ptr this_mmap, uint64_t source, uint64_t destination
 		rva1 = source;
 		}
 	rva = source - this_mmap->addr + this_module->starting_ip;
+	target_rva = destination - target_mmap->addr + target_module->starting_ip;
 
 	if((rva1 != rva) && (print_rva < max_print))
 		{
@@ -1744,12 +1745,12 @@ increment_return(mmap_struc_ptr this_mmap, uint64_t source, uint64_t destination
 			this_sample->return_list = branch_struc_create();
 			if(this_sample->return_list == NULL)
 				err(1,"could not malloc buffer for top of rva struc return list");
-			this_sample->return_list->address = destination;
+			this_sample->return_list->address = target_rva;
 			this_sample->return_list->this_module = target_module;
 			this_sample->total_sources++;
 			}
 		this_return = this_sample->return_list;
-		while(this_return->address != destination)
+		while(this_return->address != target_rva)
 			{
 			if(this_return->next == NULL)
 				{
@@ -1758,7 +1759,7 @@ increment_return(mmap_struc_ptr this_mmap, uint64_t source, uint64_t destination
 				if(this_return->next == NULL)
 					err(1,"could not malloc buffer for next return list");
 				this_return->next->previous = this_return;
-				this_return->next->address = destination;
+				this_return->next->address = target_rva;
 				this_return->next->this_module = target_module;
 				this_sample->total_sources++;
 				}
@@ -1792,7 +1793,7 @@ increment_return(mmap_struc_ptr this_mmap, uint64_t source, uint64_t destination
 		this_sample->return_list = branch_struc_create();
 		if(this_sample->return_list == NULL)
 			err(1,"could not malloc buffer for top of rva struc return list");
-		this_sample->return_list->address = destination;
+		this_sample->return_list->address = target_rva;
 		this_sample->return_list->this_module = target_module;
 		this_sample->return_list->count++;
 
@@ -1828,16 +1829,16 @@ increment_return(mmap_struc_ptr this_mmap, uint64_t source, uint64_t destination
 }
 
 int
-increment_call_site(mmap_struc_ptr target_mmap, uint64_t source, uint64_t destination, mmap_struc_ptr this_mmap)
+increment_call_site(mmap_struc_ptr source_mmap, uint64_t source, uint64_t destination, mmap_struc_ptr this_mmap)
 {
-	module_struc_ptr this_module, target_module;
+	module_struc_ptr this_module, source_module;
 	process_struc_ptr this_process,principal_process;
 	sample_struc_ptr this_sample;
 	hash_struc_ptr this_hash_entry, this_hash; 
 	hash_data *this_hash_array;
 	branch_struc_ptr this_call;
 
-	uint64_t rva,rva1,tmp, four_hundredK = 0x400000;
+	uint64_t rva,source_rva,rva1,tmp, four_hundredK = 0x400000;
 	double val;
 	int index;
 	int offset, size;
@@ -1855,7 +1856,7 @@ increment_call_site(mmap_struc_ptr target_mmap, uint64_t source, uint64_t destin
 //	this should be the the instruction after a call
 //	ultimately the addresses in the linked list should be updated to the entry points of the function containing the return address
 //	and maybe these events should be displayed at one asm instruction earlier
-//	the function is called with this_mmap and target_mmap reversed
+//	the function is called with this_mmap and target_mmap reversed with target mmap renamed source_mmap
 //	this allows reuse (copy) of the code from increment_return
 
 #ifdef DBUG
@@ -1870,7 +1871,7 @@ increment_call_site(mmap_struc_ptr target_mmap, uint64_t source, uint64_t destin
 	this_module = this_mmap->this_module;
 	this_module->total_sample_count++;
 	this_module->sample_count[target_index]++;
-	target_module = target_mmap->this_module;
+	source_module = source_mmap->this_module;
 	principal_process = this_mmap->principal_process;
 	principal_process->total_sample_count++;
 	principal_process->sample_count[target_index]++;
@@ -1885,6 +1886,7 @@ increment_call_site(mmap_struc_ptr target_mmap, uint64_t source, uint64_t destin
 		rva1 = destination;
 		}
 	rva = destination - this_mmap->addr + this_module->starting_ip;
+	source_rva = source - source_mmap->addr + source_module->starting_ip;
 
 	if((rva1 != rva) && (print_rva < max_print))
 		{
@@ -1947,12 +1949,12 @@ increment_call_site(mmap_struc_ptr target_mmap, uint64_t source, uint64_t destin
 			this_sample->call_list = branch_struc_create();
 			if(this_sample->call_list == NULL)
 				err(1,"could not malloc buffer for top of rva struc call list");
-			this_sample->call_list->address = source;
-			this_sample->call_list->this_module = target_module;
+			this_sample->call_list->address = source_rva;
+			this_sample->call_list->this_module = source_module;
 			this_sample->total_targets++;
 			}
 		this_call = this_sample->call_list;
-		while(this_call->address != source)
+		while(this_call->address != source_rva)
 			{
 			if(this_call->next == NULL)
 				{
@@ -1961,8 +1963,8 @@ increment_call_site(mmap_struc_ptr target_mmap, uint64_t source, uint64_t destin
 				if(this_call->next == NULL)
 					err(1,"could not malloc buffer for next call list");
 				this_call->next->previous = this_call;
-				this_call->next->address = source;
-				this_call->next->this_module = target_module;
+				this_call->next->address = source_rva;
+				this_call->next->this_module = source_module;
 				this_sample->total_targets++;
 				}
 			this_call = this_call->next;
@@ -1991,12 +1993,12 @@ increment_call_site(mmap_struc_ptr target_mmap, uint64_t source, uint64_t destin
 		fprintf(stderr," first sample at this index\n");
 #endif
 		this_hash_entry->this_sample = this_sample;
-//this is where things chage with respect to increment_module..since we want to increment the linked list of return destinations
+//this is where things change with respect to increment_module..since we want to increment the linked list of return destinations
 		this_sample->call_list = branch_struc_create();
 		if(this_sample->call_list == NULL)
 			err(1,"could not malloc buffer for top of rva struc call list");
-		this_sample->call_list->address = source;
-		this_sample->call_list->this_module = target_module;
+		this_sample->call_list->address = source_rva;
+		this_sample->call_list->this_module = source_module;
 		this_sample->call_list->count++;
 		this_sample->sample_count[target_index]++;
 		this_sample->total_sample_count++;

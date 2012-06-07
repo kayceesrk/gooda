@@ -2040,42 +2040,43 @@ hotspot_call_graph(pointer_data * global_func_list)
 		this_source = this_function->sources;
 		from_links = 0;
 #ifdef DBUG
-		fprintf(stderr," sources for function %s\n",this_function->function_name);
+		fprintf(stderr," sources for function %s, total source = %d, this_source = %p\n",
+			this_function->function_name,this_function->total_sources,this_source);
 #endif
-		if(this_function->total_sources < source_cutoff)
+		l = 0;
+		while(this_source != NULL)
 			{
-			while(this_source != NULL)
+			this_branch = this_source->this_branch_target;
+			branch_module = this_branch->this_module;
+			function_list = branch_module->function_list;
+			address = this_branch->address;
+			if(function_list != NULL)
 				{
-				this_branch = this_source->this_branch_target;
-				branch_module = this_branch->this_module;
-				function_list = branch_module->function_list;
-				address = this_branch->address;
-				if(function_list != NULL)
+				this_branch->this_function = module_binsearch(address,function_list);
+				if(this_branch->this_function != NULL)
 					{
-					this_branch->this_function = module_binsearch(address,function_list);
-					if(this_branch->this_function != NULL)
-						{
-						if(this_branch->this_function->total_sample_count > max_sample_count)
-							max_sample_count = this_branch->this_function->total_sample_count + 1;
-						if(this_branch->count > max_link_count)
-							max_link_count = this_branch->count + 1;
+					if(this_branch->this_function->total_sample_count > max_sample_count)
+						max_sample_count = this_branch->this_function->total_sample_count + 1;
+					if(this_branch->count > max_link_count)
+						max_link_count = this_branch->count + 1;
 #ifdef DBUG
-						fprintf(stderr," was called from 0x%"PRIx64", in function %s, %d times\n",
-							this_branch->address,this_branch->this_function->function_name,this_branch->count);
+					fprintf(stderr," was called from 0x%"PRIx64", in function %s, %d times\n",
+						this_branch->address,this_branch->this_function->function_name,this_branch->count);
 #endif
-						}
-					else
-						{
-#ifdef DBUG	
-						fprintf(stderr," was called from 0x%"PRIx64", in function NULL, %d times\n",
-							this_branch->address,this_branch->count);
-#endif
-						}
 					}
-				from_links++;
-				link_count++;
-				this_source = this_source->next;
+				else
+					{
+#ifdef DBUG	
+					fprintf(stderr," was called from 0x%"PRIx64", in function NULL, %d times\n",
+						this_branch->address,this_branch->count);
+#endif
+					}
 				}
+			from_links++;
+			link_count++;
+			l++;
+			if((this_function->total_sources > source_cutoff) && (l > 11))break;
+			this_source = this_source->next;
 			}
 		to_links = 0;
 		this_source = this_function->targets;
@@ -2188,28 +2189,28 @@ hotspot_call_graph(pointer_data * global_func_list)
 #ifdef DBUG
 		fprintf(stderr," sources for function %s\n",this_function->function_name);
 #endif
-		if(this_function->total_sources < source_cutoff)
+		l = 0;
+		while(this_source != NULL)
 			{
-			while(this_source != NULL)
-				{
-				this_branch = this_source->this_branch_target;
-				node_list[j].src_trg = (uint64_t)this_branch->this_function;
-				node_list[j].index = -1;
-				j++;
-				if(j > node_count+link_count)
-					err(1,"too many nodes in second loop in hotpsot_call_graph, j = %d, node_count + link_count = %d",
-						j,node_count+link_count);
-				link_data[k].source = this_function;
-				link_data[k].target = this_branch->this_function;
-				link_data[k].count = this_branch->count;
-				linkpairs[k].src_trg = (uint64_t) ((uint64_t)link_data[k].source & mask);
-				linkpairs[k].src_trg += (uint64_t)(((uint64_t)link_data[k].target & mask)<<32);
-				linkpairs[k].index = k;
-				k++;
-				if(k > link_count)
-					err(1,"too many links in second loop in hotpsot_call_graph, k = %d, link_count = %d",j,link_count);
-				this_source = this_source->next;
-				}
+			this_branch = this_source->this_branch_target;
+			node_list[j].src_trg = (uint64_t)this_branch->this_function;
+			node_list[j].index = -1;
+			j++;
+			if(j > node_count+link_count)
+				err(1,"too many nodes in second loop in hotpsot_call_graph, j = %d, node_count + link_count = %d",
+					j,node_count+link_count);
+			link_data[k].source = this_function;
+			link_data[k].target = this_branch->this_function;
+			link_data[k].count = this_branch->count;
+			linkpairs[k].src_trg = (uint64_t) ((uint64_t)link_data[k].source & mask);
+			linkpairs[k].src_trg += (uint64_t)(((uint64_t)link_data[k].target & mask)<<32);
+			linkpairs[k].index = k;
+			k++;
+			if(k > link_count)
+				err(1,"too many links in second loop in hotpsot_call_graph, k = %d, link_count = %d",j,link_count);
+			l++;
+			if((this_function->total_sources > source_cutoff) && (l > 11))break;
+			this_source = this_source->next;
 			}
 		this_source = this_function->targets;
 #ifdef DBUG
@@ -2357,7 +2358,7 @@ hotspot_call_graph(pointer_data * global_func_list)
 	j = linkpairs[0].index;
 	if((link_data[j].source != NULL) && (link_data[j].target != NULL))
 		{
-		penwidth = 9*link_data[j].count/max_link_count +1;
+		penwidth = 9*link_data[j].count/max_link_count + 1;
 		if(penwidth > 10)penwidth = 10;
 		fprintf(dot,"\t\"%s\"->\"%s\" [penwidth = %d, label=\"%d\"];\n",
 			link_data[j].target->function_name,link_data[j].source->function_name,penwidth,link_data[j].count);
@@ -2369,7 +2370,8 @@ hotspot_call_graph(pointer_data * global_func_list)
 		j = linkpairs[i].index;
 		if(link_data[j].source == NULL)continue;
 		if(link_data[j].target == NULL)continue;
-		penwidth = 5*link_data[j].count/max_link_count;
+		penwidth = 9*link_data[j].count/max_link_count + 1;
+		if(penwidth > 10)penwidth = 10;
 		fprintf(dot,"\t\"%s\"->\"%s\" [penwidth = %d, label=\"%d\"];\n",
 			link_data[j].target->function_name,link_data[j].source->function_name,penwidth,link_data[j].count);
 		}
@@ -3321,8 +3323,16 @@ func_asm(pointer_data * global_func_list, int index)
 			}
 		else
 			{
-			sprintf(this_bb->text," Basic Block %d <0x%"PRIx64">\0",bb_count+1,loop_asm->address);
-			this_bb->target2 = loop_asm->address;
+			if(loop_asm != NULL)
+				{
+				sprintf(this_bb->text," Basic Block %d <0x%"PRIx64">\0",bb_count+1,loop_asm->address);
+				this_bb->target2 = loop_asm->address;
+				}
+			else
+				{
+				sprintf(this_bb->text," Basic Block %d \0",bb_count+1);
+				this_bb->target2 = 0;
+				}
 			}
 		if((this_bb->target1 != 0) && ((this_bb->target1 < base) || (this_bb->target1 > end)))deadbeef++;		
 //		last bb

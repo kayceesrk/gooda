@@ -15,10 +15,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
+DESTDIR=/usr/local
+GOODA_DIR=$(DESTDIR)/libexec/gooda
+gooda_path = $(subst /,\/,$(GOODA_DIR))
 
 CC = gcc
+INSTALL = install
 
-CFLAGS=-O2 -g -I.
+CFLAGS=-O2 -g -I. -DGOODA_DIR=\"$(GOODA_DIR)\"
 
 gooda :	perf_gooda_read.o gooda_create.o perf_gooda_create.o gooda_util.o analyzer.o asm2src.o column_align_intel.o column_align_def.o column_align.o load_addr.o
 	${CC} $(CFLAGS) -o $@ perf_gooda_read.o gooda_create.o perf_gooda_create.o load_addr.o gooda_util.o analyzer.o asm2src.o column_align.o column_align_intel.o column_align_def.o -lbfd -liberty -lz -ldl
@@ -59,3 +63,16 @@ reader: ${objs}
 
 clean:
 	rm -f *.o gooda
+
+
+install: gooda
+	-mkdir -p $(GOODA_DIR)/scripts
+	-mkdir -p $(GOODA_DIR)/report_files
+	$(INSTALL) -m 755 gooda $(DESTDIR)/bin
+	$(INSTALL) -m 644 scripts/*.txt $(GOODA_DIR)/scripts
+	$(INSTALL) -m 644 report_files/*.csv $(GOODA_DIR)/report_files
+	for i in scripts/*.sh; \
+	do \
+		sed -e "s/GOODA_DIR/$(gooda_path)/" $$i >$(DESTDIR)/bin/`basename $$i`; \
+		chmod 755 $(DESTDIR)/bin/`basename $$i`; \
+	done

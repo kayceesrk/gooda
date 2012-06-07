@@ -33,18 +33,19 @@ limitations under the License.
 #include <unistd.h>
 #include <stddef.h>
 #include <malloc.h>
+#include <limits.h>
 #include "perf_event.h"
 #include "gooda.h"
 #include "perf_gooda.h"
 #include "gooda_util.h"
 
 FILE *input;
-char *input_file;
+char input_file[PATH_MAX];
 order_data* fixed_order_data;
-char input_file_snb[]="../snb.csv";
-char input_file_snb_ep[]="../snb_ep.csv";
-char input_file_wsm_ep[]="../wsm_ep.csv";
-char input_file_wsm[]="../wsm.csv";
+char input_file_snb[]="snb.csv";
+char input_file_snb_ep[]="snb_ep.csv";
+char input_file_wsm_ep[]="wsm_ep.csv";
+char input_file_wsm[]="wsm.csv";
 int *fixed_index;
 //	ratio column names
 	char rs_empty_duration_snb[]="Avg_RS_empty_duration",wrong_path_snb[]="Wrong_path_cycles";
@@ -195,6 +196,7 @@ init_order_intel(int arch_val)
 	int field_len;
 	event_order_struc_ptr this_event_order;
 	uint64_t offset;
+	char *file;
 
 	this_event_order = (event_order_struc_ptr)malloc(sizeof(event_order_data));
 	if(this_event_order == NULL)
@@ -203,17 +205,18 @@ init_order_intel(int arch_val)
 	switch(arch_val)
 		{
 		case 1:
-			input_file = input_file_wsm_ep;
+			file = input_file_wsm_ep;
 			break;
 		case 4:
-			input_file = input_file_snb;
+			file = input_file_snb;
 			break;
 		default:
 			err(1," init_order_intel called with invalid value fo arch_val");
 			break;
 		}
 
-	input = fopen(input_file,mode);
+	sprintf(input_file, "%s/report_files/%s", gooda_dir, file);
+	input = fopen(input_file, mode);
 	if(input == NULL)
 		err(1,"failed to open input file %s from init_order_intel",input_file);
 	lineptr = NULL;
