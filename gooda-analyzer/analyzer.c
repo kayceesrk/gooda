@@ -4095,10 +4095,10 @@ inst_working_set(module_struc_ptr this_module)
 	char mode[] = "w+";
 	int linecount=0, sum256=0;
 
-	filename = (char*)malloc(strlen(dir)+strlen(file)+6);
+	filename = (char*)malloc(strlen(dir) + strlen(this_module->module_name) + strlen(file) + 6);
 	sprintf(filename,"%s%s%s\0",dir,this_module->module_name,file);
 	fprintf(stderr,"from inst_working_set, file = %s\n",filename);
-	filename2 = (char*)malloc(strlen(dir)+strlen(file2)+6);
+	filename2 = (char*)malloc(strlen(dir) + strlen(this_module->module_name) + strlen(file2) + 6);
 	sprintf(filename2,"%s%s%s\0",dir,this_module->module_name,file2);
 	fprintf(stderr,"from sum256, file = %s\n",filename2);
 	fprintf(stderr,"module = %s, sample_count = %d\n",this_module->path,this_module->total_sample_count);
