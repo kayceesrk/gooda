@@ -84,6 +84,7 @@ typedef struct function_struc{
 	int			func_sources;
 	int			func_targets;
 	int			funclist_index;
+	int			called_branch_eval;
 	}function_data;
 
 typedef struct source_struc{
@@ -198,6 +199,7 @@ typedef struct sample_struc{
         function_struc_ptr	this_function;
 	branch_struc_ptr	return_list;
 	branch_struc_ptr	call_list;
+	branch_struc_ptr	next_taken_list;
 	char*			asm_string;
 	int*			sample_count;
 	int*			sample_order;
@@ -209,6 +211,7 @@ typedef struct sample_struc{
 	int			total_sample_count;
 	int			total_sources;
 	int			total_targets;
+	int			total_taken_branch;
 	}sample_data;
 	
 typedef struct branch_struc{
@@ -280,22 +283,23 @@ typedef struct functionlist_struc{
 	}functionlist_data;	
 
 typedef struct asm_struc{
-	asm_struc_ptr	next;
-	asm_struc_ptr	previous;
-	uint64_t	address;
-	uint64_t	target;
-	char *		asm_text;
-	char *		encoding;
-	char *		principal_source_file;
-	char *		principal_source_name;
-	char *		initial_source_file;
-	char *		initial_source_name;
-	int *		sample_count;
-	int		principal_source_line;
-	int		initial_source_line;
-	int		branch;
-	int		call;
-	int		total_sample_count;
+	asm_struc_ptr		next;
+	asm_struc_ptr		previous;
+	uint64_t		address;
+	uint64_t		target;
+	branch_struc_ptr	next_taken_list;
+	char *			asm_text;
+	char *			encoding;
+	char *			principal_source_file;
+	char *			principal_source_name;
+	char *			initial_source_file;
+	char *			initial_source_name;
+	int *			sample_count;
+	int			principal_source_line;
+	int			initial_source_line;
+	int			branch;
+	int			call;
+	int			total_sample_count;
 	}asm_data;
 	
 typedef struct basic_block_struc{
@@ -346,6 +350,7 @@ extern function_struc_ptr global_func_stack;
 extern int * global_sample_count, total_sample_count;
 extern double *global_multiplex_correction, uop_issue_rate;
 extern char *gooda_dir;
+extern int sample_struc_count, asm_struc_count, basic_block_struc_count;
 
 function_struc_ptr function_struc_create();
 source_struc_ptr source_struc_create();

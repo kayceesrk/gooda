@@ -15,9 +15,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-DESTDIR=/usr/local
-GOODA_DIR=$(DESTDIR)/libexec/gooda
+PREFIX=/usr/local
+GOODA_DIR=$(PREFIX)/libexec/gooda
 gooda_path = $(subst /,\/,$(GOODA_DIR))
+# must match gooda.spec version
+VERSION=1.0.0
 
 CC = gcc
 INSTALL = install
@@ -66,13 +68,31 @@ clean:
 
 
 install: gooda
-	-mkdir -p $(GOODA_DIR)/scripts
-	-mkdir -p $(GOODA_DIR)/report_files
-	$(INSTALL) -m 755 gooda $(DESTDIR)/bin
-	$(INSTALL) -m 644 scripts/*.txt $(GOODA_DIR)/scripts
-	$(INSTALL) -m 644 report_files/*.csv $(GOODA_DIR)/report_files
+	-mkdir -p $(DESTDIR)$(GOODA_DIR)/scripts
+	-mkdir -p $(DESTDIR)$(GOODA_DIR)/report_files
+	-mkdir -p $(DESTDIR)$(PREFIX)/bin
+	$(INSTALL) -m 755 gooda $(DESTDIR)$(PREFIX)/bin
+	$(INSTALL) -m 644 scripts/*.txt $(DESTDIR)$(GOODA_DIR)/scripts
+	$(INSTALL) -m 644 report_files/*.csv $(DESTDIR)$(GOODA_DIR)/report_files
 	for i in scripts/*.sh; \
 	do \
-		sed -e "s/GOODA_DIR/$(gooda_path)/" $$i >$(DESTDIR)/bin/`basename $$i`; \
-		chmod 755 $(DESTDIR)/bin/`basename $$i`; \
+		sed -e "s/GOODA_DIR/$(gooda_path)/" $$i >$(DESTDIR)$(PREFIX)/bin/`basename $$i`; \
+		chmod 755 $(DESTDIR)$(PREFIX)/bin/`basename $$i`; \
 	done
+
+rpm: 
+	(R=`mktemp -d /var/tmp/rpmbuild.perf.XXXXXX`; \
+	 mkdir -p $$R/SOURCES/gooda-$(VERSION); \
+	 tar cpf - * | tar -C $$R/SOURCES/gooda-$(VERSION) -xpf -;\
+	 cd $$R/SOURCES; \
+	 tar czf gooda-$(VERSION).tar.gz gooda-$(VERSION); \
+	 rm -rf gooda-$(VERSION); \
+	 cd -; \
+	 rpmbuild --clean --rmsource -bb gooda.spec --define "_topdir $$R"; \
+	 cp $$R/RPMS/*/gooda*.rpm .;\
+	 rm -rf $$R)
+
+debian:
+	debuild -i -us -uc -b
+
+.PHONY: debian

@@ -205,7 +205,7 @@ main(int argc, char ** argv)
 	call_run_time = call_stop - call_start;
 	avg_bw=(double)(total_bytes)/(double)call_run_time;
 //  printout
-	printf(" transfering %lld bytes from memory level %d took %lld cycles\n",total_bytes,mem_level,run_time);
+	printf(" transfering %lld bytes from memory level %d took %lld cycles/call and a total of %lld\n",total_bytes,mem_level,run_time,call_run_time);
 	printf(" average bytes/cycle = %f\n", avg_bw);
 	printf(" best bytes/cycle = %f\n",best_bw);
 }

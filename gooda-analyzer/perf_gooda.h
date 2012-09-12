@@ -151,6 +151,7 @@ typedef struct event_name_struc{
 	uint64_t 	period;
 	uint64_t	branch_sample_type;
 	int		return_filtered_return;
+	int		near_taken_filtered_any_taken;
 	int		fixed;
 	} event_name_data;
 

@@ -69,7 +69,7 @@ void*
 init(void)
 {
 	uint32_t base_pid =0xFFFFFFFF, base_tid=0;
-	char *base_name, *kern_name, *ret, name[] = "kernel_object", kname[] = "vmlinux" ;
+	char *base_name, *kern_name, *ret, name[] = "aggregated_kernel_object", kname[] = "vmlinux" ;
 	int nlen;
 	uint64_t tzero = 0;
 	int last, i;
@@ -764,6 +764,7 @@ insert_mmap(mm_struc_ptr this_mm, char* filename, uint64_t new_time)
 			{
 			kern_mmap = 1;
 			this_struc->addr = this_mm->pgoff;
+			base_kern_address = this_struc->addr;
 			this_struc->len = this_mm->len - this_mm->pgoff;
 #ifdef DBUG
 			fprintf(stderr,"fixup for kernel_kallsysms, old len = 0x%"PRIx64", new len = 0x%"PRIx64", pgoff = 0x%"PRIx64", addr = 0x%"PRIx64"\n",
@@ -1414,17 +1415,24 @@ increment_module_struc(uint32_t pid, uint32_t tid, uint64_t ip, int this_event, 
 	fprintf(stderr," from this_mmap, this module address = %p, this_process address = %p\n",this_mmap->this_module, this_mmap->this_process);
 #endif
 
-	global_sample_count[num_cores*this_event + this_cpu ] += 1;
-	global_sample_count[num_events*(num_cores + num_sockets) + this_event ] += 1;
-	if((time_running > 0) && (time_running < time_enabled) ) global_multiplex_correction[num_cores*this_event + this_cpu]  = (double)time_enabled/(double)time_running;
+	if(pid != pid_ker)
+		{
+		global_sample_count[num_cores*this_event + this_cpu ] += 1;
+		global_sample_count[num_events*(num_cores + num_sockets) + this_event ] += 1;
+		if((time_running > 0) && (time_running < time_enabled) ) 
+			global_multiplex_correction[num_cores*this_event + this_cpu]  = (double)time_enabled/(double)time_running;
+		}
 
 	this_module = this_mmap->this_module;
 	this_process = this_mmap->this_process;
 	principal_process = this_mmap->principal_process;
-
-	this_thread = find_thread_struc(this_process, tid);
 	module_stack = principal_process->first_module;
-	thread_stack = this_process->first_thread;
+
+	if(pid != pid_ker)
+		{
+		this_thread = find_thread_struc(this_process, tid);
+		thread_stack = this_process->first_thread;
+		}
 #ifdef DBUG
 	fprintf(stderr," process path = %s, module_path = %s\n", this_process->name, this_module->path);
 #endif
@@ -1443,7 +1451,7 @@ increment_module_struc(uint32_t pid, uint32_t tid, uint64_t ip, int this_event, 
 #ifdef DBUG
 	fprintf(stderr," incremented process, module total counts\n");
 #endif
-	if(this_thread !=NULL)
+	if((this_thread !=NULL) && (pid != pid_ker))
 		{
 		this_thread->total_sample_count++;
 //			this must be done here as the rva structures do not track the thread ID
@@ -1462,7 +1470,7 @@ increment_module_struc(uint32_t pid, uint32_t tid, uint64_t ip, int this_event, 
 		}
 #ifdef DBUG
 	fprintf(stderr," incremented process, module and thread total counts\n");
-		if(this_thread != NULL)	
+		if((this_thread != NULL) && (pid != pid_ker))
 			fprintf(stderr," address of this_thread->sample_count[offset] = %p, value of this_thread->sample_count[offset] = %d\n",
 			&this_thread->sample_count[num_cores*this_event + this_cpu ], this_thread->sample_count[num_cores*this_event + this_cpu ]);
 #endif
@@ -1492,7 +1500,7 @@ increment_module_struc(uint32_t pid, uint32_t tid, uint64_t ip, int this_event, 
 			module_stack  = this_module;
 			}
 		}
-	if(this_thread != NULL) 
+	if((this_thread != NULL) && (pid != pid_ker))
 	  {
 	  if( (this_thread->total_sample_count && pop_threshold) == 0)
 		{
@@ -2003,6 +2011,209 @@ increment_call_site(mmap_struc_ptr source_mmap, uint64_t source, uint64_t destin
 		this_sample->sample_count[target_index]++;
 		this_sample->total_sample_count++;
 		this_sample->total_targets++;
+		global_branch_sample_count++;
+		this_sample->next = this_module->first_sample;
+		this_sample->rva = rva;
+		if(this_module->first_sample != NULL)
+			this_module->first_sample->previous = this_sample;
+		this_module->first_sample = this_sample;
+		this_module->this_table->entries++;
+#ifdef DBUG
+		fprintf(stderr," new sample, incremented table entries\n");
+#endif
+		if(this_module->this_table->entries > this_module->this_table->size*max_entry_fraction)
+//			create a new hash table and move all entries to the new table
+			{
+#ifdef DBUG
+			fprintf(stderr,"making a bigger table for module = %s\n",this_module->path);
+#endif
+			this_module->this_table = create_big_table(this_module);
+			if(this_module->this_table == NULL)
+				{
+				fprintf(stderr," failed to create larger hash table for module %s\n",this_module->path);
+				err(1, "failed to create larger hash");
+				}
+			}
+		}
+	return 0;
+
+}
+
+int
+increment_next_taken_site(mmap_struc_ptr this_mmap, uint64_t source, uint64_t next_branch, mmap_struc_ptr next_taken_mmap)
+{
+	module_struc_ptr this_module, next_taken_module;
+	process_struc_ptr this_process,principal_process;
+	sample_struc_ptr this_sample;
+	hash_struc_ptr this_hash_entry, this_hash; 
+	hash_data *this_hash_array;
+	branch_struc_ptr this_next_taken;
+
+	uint64_t rva,next_taken_rva,rva1,tmp, four_hundredK = 0x400000;
+	double val;
+	int index;
+	int offset, size;
+
+//	What is called a source or target depends on the usage.
+//	this function is processing the LBRs associated with return instructions
+//	and the rva is being defined by the target of the branch instruction
+//	thus these returns are used to determine call counts from the instructions preceeding
+//	the targets of these branches
+//	BUT
+//	for the display it is better to call the sample_count element at the call instruction the source
+//	and the sample count in the function with the return, the target
+//
+//	this function reverses the branch direction of the returns placing the call count chain at the rva of the returns destination
+//	this should be the the instruction after a call
+//	ultimately the addresses in the linked list should be updated to the entry points of the function containing the return address
+//	and maybe these events should be displayed at one asm instruction earlier
+//	the function is called with this_mmap and target_mmap reversed with target mmap renamed source_mmap
+//	this allows reuse (copy) of the code from increment_return
+
+#ifdef DBUG
+	fprintf(stderr," entering increment_next_taken_site, source = 0x%"PRIx64", next_branch = 0x%"PRIx64", module = %s\n",
+			source,next_branch,this_mmap->this_module->path);
+#endif
+	if(util_dbg_flag == 0)
+		{
+		fprintf(stderr,"increment_next_taken_site, next_taken_index = %d\n",next_taken_index);
+		util_dbg_flag = 1;
+		}
+	this_module = this_mmap->this_module;
+	this_module->total_sample_count++;
+	this_module->sample_count[next_taken_index]++;
+	next_taken_module = next_taken_mmap->this_module;
+	principal_process = this_mmap->principal_process;
+	principal_process->total_sample_count++;
+	principal_process->sample_count[next_taken_index]++;
+	global_sample_count[next_taken_index]++;
+
+	if(this_mmap->addr != four_hundredK)
+		{
+		rva1 = source - this_mmap->addr;
+		}
+	else
+		{
+		rva1 = source;
+		}
+	rva = source - this_mmap->addr + this_module->starting_ip;
+	next_taken_rva = next_branch - next_taken_mmap->addr + next_taken_module->starting_ip;
+
+	if((rva1 != rva) && (print_rva < max_print))
+		{
+		fprintf(stderr," next_branch = %lx, rva1 = %lx, rva = %lx, mmap_addr = %lx, starting_ip = %lx\n",
+			next_branch,rva1,rva,this_mmap->addr, this_module->starting_ip);
+		print_rva++;
+		}
+	val = (double) (rva & 0x7FFFFFFF);
+
+	if(this_module->this_table == NULL)
+		this_module->this_table = rva_hash_struc_create(default_hash_length);
+#ifdef DBUG
+	fprintf(stderr," made hash table, len = %d\n", default_hash_length);
+	fprintf(stderr," val = %f\n",val);
+//	fprintf(stderr," sqrt_five = %f\n",sqrt_five);
+#endif
+	if(this_module->this_table == NULL)
+		{
+		fprintf(stderr, " increment module failed to create initial hash table, module = %s\n",this_module->path);
+		err(1, "increment module failed to create initial hash table");
+		}
+
+	val = val*sqrt_five;
+	tmp = (uint64_t) val;
+	index = (int) (tmp & 0x7FFFFFFF);
+//	fprintf(stderr,"index = %x\n",index);
+	index = index%this_module->this_table->size;
+//	fprintf(stderr,"index = %x\n",index);
+	this_hash_array = this_module->this_table->this_array;
+	this_hash_entry = &this_hash_array[index];
+#ifdef DBUG
+	fprintf(stderr," got pointer to hash structure\n");
+#endif
+
+	if(this_hash_entry->this_rva != 0)
+		{
+//		fprintf(stderr," base entry exists\n");
+//	base entry exists
+//	find (or create) exact entry;
+//	increment sample struc
+		this_hash = this_hash_entry;
+		if(this_hash_entry->this_rva != rva)
+			{
+#ifdef DBUG
+			fprintf(stderr," hash rva != rva\n");
+#endif
+			this_hash = find_hash_entry(this_hash_entry, rva, this_module->this_table, this_module);
+#ifdef DBUG
+			fprintf(stderr," found hash entry != to hash table[index]\n");
+#endif	
+			}
+#ifdef DBUG
+		if(this_hash == NULL)fprintf(stderr," this_hash = NULL\n");
+#endif
+		this_sample = this_hash->this_sample;
+//this is where things change with respect to increment_module..since we want to increment the linked list of return destinations
+		this_sample->sample_count[next_taken_index]++;
+		if(this_sample->next_taken_list == NULL)
+			{
+			this_sample->next_taken_list = branch_struc_create();
+			if(this_sample->next_taken_list == NULL)
+				err(1,"could not malloc buffer for top of rva struc next_taken list");
+			this_sample->next_taken_list->address = next_taken_rva;
+			this_sample->next_taken_list->this_module = next_taken_module;
+			this_sample->total_taken_branch++;
+			}
+		this_next_taken = this_sample->next_taken_list;
+		while(this_next_taken->address != next_taken_rva)
+			{
+			if(this_next_taken->next == NULL)
+				{
+//			create new return struc and add it to the end of the stack
+				this_next_taken->next = branch_struc_create();
+				if(this_next_taken->next == NULL)
+					err(1,"could not malloc buffer for next this_taken list");
+				this_next_taken->next->previous = this_next_taken;
+				this_next_taken->next->address = next_taken_rva;
+				this_next_taken->next->this_module = next_taken_module;
+				this_sample->total_taken_branch++;
+				}
+			this_next_taken = this_next_taken->next;
+			}
+		this_next_taken->count++;
+				
+
+		this_hash->this_sample->total_sample_count++;
+		global_branch_sample_count++;
+		}
+	else
+		{
+		
+//	fill the empty array element
+#ifdef DBUG
+		fprintf(stderr," need to make new hash structure for this index\n");
+#endif
+		this_hash_entry->this_rva = rva;
+		this_sample = sample_struc_create();
+		if(this_sample == NULL)
+			{
+			fprintf(stderr," failed to create sample entry for module %s, rva = 0x%"PRIx64"\n",this_module->path,rva);
+			err(1, "failed to create sample entry");
+			}
+#ifdef DBUG
+		fprintf(stderr," first sample at this index\n");
+#endif
+		this_hash_entry->this_sample = this_sample;
+//this is where things change with respect to increment_module..since we want to increment the linked list of next taken branch locations
+		this_sample->next_taken_list = branch_struc_create();
+		if(this_sample->next_taken_list == NULL)
+			err(1,"could not malloc buffer for top of rva struc next_taken list");
+		this_sample->next_taken_list->address = next_taken_rva;
+		this_sample->next_taken_list->this_module = next_taken_module;
+		this_sample->next_taken_list->count++;
+		this_sample->sample_count[next_taken_index]++;
+		this_sample->total_sample_count++;
+		this_sample->total_taken_branch++;
 		global_branch_sample_count++;
 		this_sample->next = this_module->first_sample;
 		this_sample->rva = rva;

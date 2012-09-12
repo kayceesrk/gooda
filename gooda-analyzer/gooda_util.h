@@ -245,12 +245,16 @@ extern event_attr_ptr global_attrs;
 extern event_id_ptr global_event_ids;
 extern int asm_cutoff, func_cutoff, source_cutoff, max_bb, max_branch;
 extern int num_branch, num_sub_branch, num_derived;
-extern int source_index, target_index, source_column, target_column;
+extern int source_index, target_index, bb_exec_index, sw_inst_retired_index, next_taken_index;
+extern int source_column, target_column, bb_exec_column, sw_inst_retired_column, next_taken_column;
 extern char **fixed_name_list, **branch_name_list;
 extern int * fixed_event_index;
 extern int column_flag;
 extern int family, model;
 extern char *arch, *cpu_desc;
+extern uint64_t base_kern_address;
+extern uint32_t pid_ker;
+extern int aggregate_func_list;
 
 mmap_struc_ptr insert_mmap (mm_struc_ptr this_mm, char* filename, uint64_t this_time);
 void* insert_event_descriptions(int nr_attrs, int nr_ids, perf_file_attr_ptr attrs, event_id_ptr event_ids);
@@ -276,5 +280,6 @@ void multiplex_correction();
 void quickSortIndex(index_data *arr, int elements);
 int increment_return(mmap_struc_ptr this_mmap, uint64_t source, uint64_t destination, mmap_struc_ptr target_mmap);
 int increment_call_site(mmap_struc_ptr this_mmap, uint64_t source, uint64_t destination, mmap_struc_ptr target_mmap);
+int increment_next_taken_site(mmap_struc_ptr this_mmap, uint64_t source, uint64_t next_branch, mmap_struc_ptr next_taken_mmap);
 uint64_t parse_elf_header(int fd);
 

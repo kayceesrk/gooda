@@ -107,7 +107,14 @@ init_order(void)
 	else if ((family == 6) && (model == 45))
 		{
 //		SNB-EP
-		arch_val = 4;
+		arch_val = 5;
+		init_order_intel(arch_val);
+		return;
+		}
+	else if ((family == 6) && (model == 58))
+		{
+//		IVB
+		arch_val = 6;
 		init_order_intel(arch_val);
 		return;
 		}
@@ -140,6 +147,12 @@ branch_eval(int* sample_count)
 		branch_eval_intel();
 		return;
 		}
+	else if ((family == 6) && (model == 58))
+		{
+//		IVB
+		branch_eval_intel();
+		return;
+		}
 	else
 		{
 //		default
@@ -167,7 +180,13 @@ set_order(int* sample_count)
 	else if ((family == 6) && (model == 45))
 		{
 //		SNB-EP
-		retval = set_order_intel(sample_count, 4);
+		retval = set_order_intel(sample_count, 5);
+		return retval;
+		}
+	else if ((family == 6) && (model == 58))
+		{
+//		SNB-EP
+		retval = set_order_intel(sample_count, 6);
 		return retval;
 		}
 	else

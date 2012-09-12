@@ -13,6 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
+
  */
 
 //     Generic Optimization Data Analyzer
@@ -46,10 +47,19 @@ char input_file_snb[]="snb.csv";
 char input_file_snb_ep[]="snb_ep.csv";
 char input_file_wsm_ep[]="wsm_ep.csv";
 char input_file_wsm[]="wsm.csv";
+char input_file_ivb[]="ivb.csv";
 int *fixed_index;
 //	ratio column names
-	char rs_empty_duration_snb[]="Avg_RS_empty_duration",wrong_path_snb[]="Wrong_path_cycles";
-	char port_saturation_snb[]="port_saturation";
+	char rs_empty_duration[]="Avg_RS_empty_duration",wrong_path[]="Wrong_path_cycles";
+	char port_saturation[]="port_saturation";
+//	event names for basic block execution by LBR analysis
+	char inst_retired[]="instruction_retired",inst_retired_prec_dist[]="inst_retired:prec_dist";
+	char br_near_taken[]="br_inst_retired:near_taken";
+	char lbr_insert_event[]="rob_misc_events:lbr_inserts";
+//	this may change in the future based on family/model
+int	intel_lbr_entries=16;
+int	inst_ret_index=-1, inst_ret_prec_dist_index=-1,br_taken_index=-1;
+double	sw_inst_ret_correction = 1.0;
 
 int
 read_char_row(uint64_t offset, int num_fixed)
@@ -209,6 +219,12 @@ init_order_intel(int arch_val)
 			break;
 		case 4:
 			file = input_file_snb;
+			break;
+		case 5:
+			file = input_file_snb_ep;
+			break;
+		case 6:
+			file = input_file_ivb;
 			break;
 		default:
 			err(1," init_order_intel called with invalid value fo arch_val");
@@ -528,7 +544,7 @@ init_order_intel(int arch_val)
 
 //	derived events are architecture specific
 //	snb specific for the next 15 lines
-	if(arch_val == 4)
+	if(arch_val >= 4)
 		{
 		derived_events = (derived_sample_data*)malloc(num_derived*sizeof(derived_sample_data));
 		if(derived_events == NULL)
@@ -544,7 +560,7 @@ init_order_intel(int arch_val)
 				j++;
 				}
 			}
-//	this sets up the assorted global indecies for the source and target derived LBR data
+//	this sets up the assorted global indecies for the source, target, bb_exec, sw_inst_ret and next_taken derived LBR data
 		derived_events[0].sample_index = num_events*(num_cores + num_sockets + 1) + num_branch + num_sub_branch + 1;
 		for(i=1;i<num_derived;i++)
 			derived_events[i].sample_index = derived_events[0].sample_index + i;
@@ -552,6 +568,12 @@ init_order_intel(int arch_val)
 		source_column = derived_events[0].table_position;
 		target_index = derived_events[1].sample_index;
 		target_column = derived_events[1].table_position;
+		bb_exec_index = derived_events[2].sample_index;
+		bb_exec_column = derived_events[2].table_position;
+		sw_inst_retired_index = derived_events[3].sample_index;
+		sw_inst_retired_column = derived_events[3].table_position;
+		next_taken_index = derived_events[4].sample_index;
+		next_taken_column = derived_events[4].table_position;
 		}
 // end of snb specific code
 
@@ -577,6 +599,7 @@ set_order_intel(int* sample_count, int arch_val)
 	double default_multiplex = 1.0;
 	char uops_issued[]="uops_issued:any",uops_issued_cycles[]="uops_issued:any:c=1";
 	int base_index, first_ordered_col;
+	int preferred_inst_retired=0;
 //	CAUTION*****CAUTION******CAUTION
 //	MANY LATENCIES ARE FREQUENCY DEPENDENT
 //	YOU SHOULD DETERMINE THE CORRECT VALUES FOR YOUR MACHINE WITH KERNELS
@@ -621,19 +644,73 @@ set_order_intel(int* sample_count, int arch_val)
 			this_event_order->order[i].config = event_list[j].config;
 			this_event_order->order[i].multiplex = global_multiplex_correction[this_event_order->order[i].index];
 			this_event_order->order[i].Period = event_list[j].period;
+//	basic block specific
+			if(strcmp(this_event_order->order[i].name,inst_retired_prec_dist) == 0)
+				{
+				inst_ret_prec_dist_index = i;
+				preferred_inst_retired = 1;
+				if(sw_inst_retired_index != 0)
+					{
+					this_event_order->order[sw_inst_retired_index].config = 0;
+					this_event_order->order[sw_inst_retired_index].Period = this_event_order->order[i].Period;
+					this_event_order->order[sw_inst_retired_index].multiplex = this_event_order->order[i].multiplex;
+					}
+				}
+			if(strcmp(this_event_order->order[i].name,inst_retired) == 0)
+				{
+				inst_ret_index = i;
+				if(preferred_inst_retired == 0)
+					{
+					if(sw_inst_retired_index != 0)
+						{
+						this_event_order->order[sw_inst_retired_index].config = 0;
+						this_event_order->order[sw_inst_retired_index].Period = this_event_order->order[i].Period;
+						this_event_order->order[sw_inst_retired_index].multiplex = this_event_order->order[i].multiplex;
+						}
+					}
+				}
+			if(strcmp(this_event_order->order[i].name,br_near_taken) == 0)
+				br_taken_index = i;
+			if(strcmp(this_event_order->order[i].name,lbr_insert_event) == 0)
+				br_taken_index = i;
 			}
-		else
+		else if(i != sw_inst_retired_index)
 			{
 			this_event_order->order[i].config = 0;
 			this_event_order->order[i].multiplex = default_multiplex;
 			this_event_order->order[i].Period = default_sample_period;
 //	snb specific
-			if(strcmp(this_event_order->order[i].name,rs_empty_duration_snb) == 0)
+			if(strcmp(this_event_order->order[i].name,rs_empty_duration) == 0)
 				{
 				this_event_order->order[i].multiplex = 1.0;
 				this_event_order->order[i].Period = 1;
 				}
 			}
+		}
+// set corrections for SW_inst_retired & BB_exec so they are normalized to the prefered inst_retired event
+//	make sure sw_inst_retired constants are actually set
+	if(sw_inst_retired_index != 0)
+		{
+		if(this_event_order->order[sw_inst_retired_index].Period == 0)
+			{
+			this_event_order->order[sw_inst_retired_index].config = 0;
+			this_event_order->order[sw_inst_retired_index].Period = default_sample_period;
+			this_event_order->order[sw_inst_retired_index].multiplex = default_multiplex;
+			}
+		else if(br_taken_index > 0)
+			{
+			sw_inst_ret_correction = ( (double)this_event_order->order[br_taken_index].Period *
+				(double)this_event_order->order[br_taken_index].multiplex) /
+				( (double)this_event_order->order[sw_inst_retired_index].Period *
+				  (double)this_event_order->order[sw_inst_retired_index].multiplex);
+			sw_inst_ret_correction = sw_inst_ret_correction/( (double)(intel_lbr_entries - 1));
+			}
+		}
+	if(bb_exec_index != 0)
+		{
+		this_event_order->order[bb_exec_index].config = 0;
+		this_event_order->order[bb_exec_index].Period = this_event_order->order[sw_inst_retired_index].Period;
+		this_event_order->order[bb_exec_index].multiplex = this_event_order->order[sw_inst_retired_index].multiplex;
 		}
 
 #ifdef DBUGI
@@ -757,14 +834,18 @@ branch_eval_intel(int* sample_count)
 
 	for(i=0; i<num_fixed; i++)
 		{
-		ratio = 0;
-		if(order[i].branch == 1)branch_order_index = order[i].index;	
-		if(order[i].sub_branch == 1)sub_branch_order_index = order[i].index;
-		if((order[i].sub_branch == 1) && (order[i].ratio == 1) )
+		ratio = order[i].ratio;
+		if(order[i].branch == 1)
 			{
-			ratio = 1;
+			branch_order_index = order[i].index;
+			if(i != bb_exec_index)sample_count[branch_order_index] = 0;
 			}
-		if(order[i].sum == 1)
+		if(order[i].sub_branch == 1)
+			{
+			sub_branch_order_index = order[i].index;
+			sample_count[sub_branch_order_index] = 0;
+			}
+		if((order[i].sum == 1) && (ratio != 1))
 			{
 			ww1 = (double)order[i].Period*(double)order[i].multiplex/cycle_norm;
 			sample_count[branch_order_index]+=(int) ( (double)sample_count[order[i].index]*(double)order[i].penalty*ww1);
@@ -774,26 +855,32 @@ branch_eval_intel(int* sample_count)
 			ww1 = (double)order[i].Period*(double)order[i].multiplex/cycle_norm;
 			sample_count[sub_branch_order_index]+=(int) ( (double)sample_count[order[i].index]*(double)order[i].penalty*ww1);
 			}
+		if(order[i].index == bb_exec_index)
+			sample_count[order[i].index] = (int)((double)sample_count[order[i].index]*sw_inst_ret_correction);
+		if(order[i].index == sw_inst_retired_index)
+			sample_count[order[i].index] = (int)((double)sample_count[order[i].index]*sw_inst_ret_correction);
+
 		if(ratio == 1)
 			{
 //			this is still old fashioned sausage making
 
-			if(strcmp(order[i].name,rs_empty_duration_snb) == 0)
+			if(strcmp(order[i].name,rs_empty_duration) == 0)
 				{
 //				rs_empty duration
 				ww1 = (double)sample_count[order[i-2].index]*(double)order[i-2].Period*order[i-2].multiplex/cycle_norm;
 				ww2 = (double)sample_count[order[i-1].index]*(double)order[i-1].Period*order[i-1].multiplex/cycle_norm;
 				if(ww2 > 0.)sample_count[order[i].index] = (int)(ww1/ww2);
 				}
-			else if(strcmp(order[i].name,wrong_path_snb) == 0)
+			else if(strcmp(order[i].name,wrong_path) == 0)
 				{
 //				wasted work/wrong path uop flow
 				ww1 = (double)sample_count[order[i+1].index]*(double)order[i+1].Period*order[i+1].multiplex/cycle_norm;
 				ww2 = (double)sample_count[order[i+2].index]*(double)order[i+2].Period*order[i+2].multiplex/cycle_norm;
 				sample_count[order[i].index] = (int)(ww1 - ww2)/uop_issue_rate;
 				if(sample_count[order[i].index] < 0)sample_count[order[i].index] = 0;
+				sample_count[branch_order_index]+=sample_count[order[i].index];
 				}
-			else if(strcmp(order[i].name,port_saturation_snb) == 0)
+			else if(strcmp(order[i].name,port_saturation) == 0)
 				{
 //	port saturation
 #ifdef DBUG

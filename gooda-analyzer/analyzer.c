@@ -26,6 +26,7 @@ limitations under the License.
 #include <string.h>
 #include <math.h>
 #include <stdarg.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <errno.h>
 #include <getopt.h>
@@ -34,7 +35,8 @@ limitations under the License.
 #include "bfd.h"
 #include "libiberty.h"
 //#include "demangle.h"
-
+#include <time.h>
+#include <limits.h>
 #include <malloc.h>
 #include "perf_event.h"
 #include "gooda.h"
@@ -468,11 +470,11 @@ process_table(void)
 	fprintf(stderr,"entering process_table\n");
 #endif
 
-	this_event_order = set_order(global_sample_count);
+//	this_event_order = set_order(global_sample_count);
 #ifdef DBUG
 	fprintf(stderr,"returned from set_order, fixed = %d, ordered = %d\n",global_event_order->num_fixed, global_event_order->num_ordered);
 #endif
-	global_event_order = this_event_order;
+	this_event_order = global_event_order;
 	if(this_event_order == NULL)
 		{
 		fprintf(stderr,"global_event_order returned NULL\n");
@@ -577,7 +579,8 @@ process_table(void)
 		process_count++;
 		}
 	fprintf(list,"[,\"Global sample breakdown\",\"all process/modules\",");
-	branch_eval(global_sample_count);
+//	this has already been called in hotspot_function
+//	branch_eval(global_sample_count);
 	for(j=0; j<num_col; j++)fprintf(list," %d,",global_sample_count[ global_event_order->order[j].index ]);
 	fprintf(list,"]\n");
 	fprintf(list,"]\n");
@@ -692,7 +695,8 @@ reorder_process(void)
 		this_process = this_process->principal_next;
 		}
 #endif
-	process_table();
+//	move this to main
+//	process_table();
 
 	fprintf(stderr," hottest process = %s, total samples = %d\n",principal_process_stack->name,principal_process_stack->total_sample_count);
 	return;
@@ -757,12 +761,16 @@ reorder_module(process_struc_ptr this_process)
 			}
 		if(loop_module->function_list != NULL)
 			{
+			if((aggregate_func_list == 1) || (this_process->pid != pid_ker))
+				{
+//				exclude psuedo process -1 unless explicitly requested by command option
 #ifdef DBUG
 		fprintf(stderr,"calling function_accumulate for module = %s, list address = %p\n",loop_module->path,loop_module->function_list);
 		fprintf(stderr," module has %d samples and %d rva's\n",rva_sample_sum,loop_module->rva_count);
 #endif
 //	if there are identified functions and RVA samples construct the function structures for the address ranges with samples
-			if((loop_module->function_list->size > 0) && (rva_sample_sum > 0))function_accumulate(loop_module, this_process);
+				if((loop_module->function_list->size > 0) && (rva_sample_sum > 0))function_accumulate(loop_module, this_process);
+				}
 			}
 		loop_module = loop_module->next;
 		}
@@ -1281,7 +1289,7 @@ get_functionlist(module_struc_ptr this_module)
 #ifdef DBUG
 	fprintf(stderr, "freed this_location from stack %d times for module path = %s\n",free_count,this_module->path);
 #endif
-	fclose(file);
+	pclose(file);
 
 	return this_functionlist;
 }
@@ -1485,6 +1493,8 @@ function_accumulate(module_struc_ptr this_module, process_struc_ptr this_process
 			this_function->sample_count[source_index] += loop_sample->sample_count[source_index];
 		if(target_index != 0)
 			this_function->sample_count[target_index] += loop_sample->sample_count[target_index];
+		if(next_taken_index != 0)
+			this_function->sample_count[next_taken_index] += loop_sample->sample_count[next_taken_index];
 
 //			aggregate call_list into functions sources list
 		this_branch = loop_sample->return_list;
@@ -1847,7 +1857,8 @@ hotspot_function(pointer_data * global_func_list)
 			for(j=0; j<num_col; j++)fprintf(stderr," name = %s, index = %d, %d\n",global_event_order->order[j].name,global_event_order->order[j].index,this_function->sample_count[ global_event_order->order[j].index ]);
 			}
 #endif
-		branch_eval(this_function->sample_count);
+//		this may have been invoked in func_asm
+		if(this_function->called_branch_eval == 0)branch_eval(this_function->sample_count);
 		for(j=0; j<num_col; j++)fprintf(sh," %d,",this_function->sample_count[ global_event_order->order[j].index ]);
 		fprintf(sh,"],\n");
 		if(i > global_func_count - func_cutoff)
@@ -1962,6 +1973,7 @@ hotspot_function(pointer_data * global_func_list)
 		}
 //	final line feed for last row of function data ...
 	fprintf(sh,"\n");
+	branch_eval(global_sample_count);
 	fprintf(sh,"[,\"Global sample breakdown\",,,,,\"all_modules\",\"all_processes\",");
 	for(j=0; j<num_col; j++)fprintf(sh," %d,",global_sample_count[ global_event_order->order[j].index ]);
 	fprintf(sh,"]\n");
@@ -2395,19 +2407,40 @@ x86_branch_identify(char* field2)
 	int branch,base_char;
 	uint64_t byte_val;
 	char byte_field[3];
+	int modrm=0;
 
 	base_char = 0;
 	branch = 0;
+	byte_val = 0;
 
+//	test for mod rm
 	if(
 		((field2[0] == '4') && ((field2[1] - '0') >= 0) && ((field2[base_char+1] - '0') < 10)) ||
 		((field2[0] == '4') && ((field2[1] - '0') >= 0) && ((field2[base_char+1] - 'a') < 6)) 
-			)base_char=2;
-	byte_field[0] = field2[base_char+2];
-	byte_field[1] = field2[base_char+3];
-	byte_field[2] = '\0';
-	byte_val = hex_to_ll(byte_field);
-	byte_val = (byte_val >>3) & 0x7;
+			)
+		{
+		base_char=2;
+		byte_field[0] = field2[base_char+2];
+		byte_field[1] = field2[base_char+3];
+		byte_field[2] = '\0';
+		byte_val = hex_to_ll(byte_field);
+		byte_val = (byte_val >>3) & 0x7;
+		}
+
+//	test for prefixes
+	if(
+		((field2[0] == '6') && (field2[1] == '6'))  ||
+		((field2[0] == 'f') && (field2[1] == '3'))  ||
+		((field2[0] == 'f') && (field2[1] == '2'))  ||
+		((field2[0] == 'f') && (field2[1] == '0'))  ||
+		((field2[0] == '2') && (field2[1] == 'e'))  ||
+		((field2[0] == '3') && (field2[1] == 'e'))  ||
+		((field2[0] == '2') && (field2[1] == '6'))  ||
+		((field2[0] == '6') && (field2[1] == '4'))  ||
+		((field2[0] == '6') && (field2[1] == '5'))  ||
+		((field2[0] == '3') && (field2[1] == '6'))  ||
+		((field2[0] == '6') && (field2[1] == '7')) 
+			)base_char = 2;
 
 	if(
 		((field2[base_char+0] == '0') && (field2[base_char+1] == 'f') && (field2[base_char+2] == '0') && ((field2[base_char+3] == '5') 
@@ -2479,6 +2512,7 @@ func_asm(pointer_data * global_func_list, int index)
 	size_t funcname_len, spreadsheet_len = 20, line_buf_len = 1024, buf_len, obj1_len = 29, obj2_len = 18, module_len, asm_len;
 	function_struc_ptr this_function;
 	module_struc_ptr this_module;
+	process_struc_ptr this_process;
 	sample_struc_ptr loop_rva;
 	asm_struc_ptr this_asm=NULL, next_asm=NULL, previous_asm=NULL, loop_asm=NULL, old_loop_asm;
 	basic_block_struc_ptr this_bb=NULL, next_bb=NULL, previous_bb=NULL, loop_bb=NULL, target_bb, last_bb_struc;
@@ -2488,7 +2522,7 @@ func_asm(pointer_data * global_func_list, int index)
 	int count, branch, branch_count, call, first_bb, last_bb, bb_count, deadbeef, first_src_bb;
 	uint64_t address, old_address, end_address, *branch_address,byte_val, first_asm=0, last_asm;
 	const char * source_file, *source_file_old;
-	int src_file_path_len, ret_val;
+	int src_file_path_len, ret_val, inline_loop_count;
 	unsigned int line_nr, line_nr_old;
 	file_list_struc_ptr principal_file_loop,old_principal_file,principal_file_max=NULL;
 	int max_principal_count = -1, num_col, src_file_test = 0;
@@ -2497,12 +2531,27 @@ func_asm(pointer_data * global_func_list, int index)
 	float color_index;
 	int fillcolor,max_bb_count=0;
 
+	typedef struct next_taken_struc* next_taken_struc_ptr;
+	typedef struct next_taken_struc{
+		next_taken_struc_ptr	next;
+		next_taken_struc_ptr	previous;
+		uint64_t		address;
+		uint64_t		count;
+		}next_taken_data;
+	uint64_t next_taken_count_sum;
+	next_taken_struc_ptr next_taken_stack, next_taken_stack_loop, previous_stack, this_next_taken;
+	branch_struc_ptr next_taken_loop;
+	uint64_t next_taken_address;
+
 	spreadsheet_len = strlen(sheetname);
 	asmd_len = strlen(asmd);
 	cfg_name_len = strlen(cfg_name);
 	cfg_len = strlen(cfg);
 	total_samples = global_sample_count_in_func;
 	summed_samples = 0;
+	next_taken_count_sum = 0;
+	next_taken_stack = NULL;
+
 	i = index;
 	hotspot_index = global_func_count - 1 - index;
 
@@ -2520,6 +2569,7 @@ func_asm(pointer_data * global_func_list, int index)
 	this_function = (function_struc_ptr) global_func_list[i].ptr;
 	count = global_func_list[i].val;
 	this_module = this_function->this_module;
+	this_process = this_function->this_process;
 	loop_rva = this_function->first_rva;
 #ifdef DBUG
 	fprintf(stderr," func_asm index = %d, %d, function %s, first rva = 0x%"PRIx64", base = 0x%"PRIx64", len = %lx\n",i,hotspot_index,this_function->function_name, loop_rva->rva,this_function->function_rva_start, this_function->function_length);
@@ -2599,7 +2649,7 @@ func_asm(pointer_data * global_func_list, int index)
 		line_count++;
 		good_line = 0;
 #ifdef DBUG
-//		fprintf(stderr," readelf -s len = %zu, line = %s",buf_len,line_buf);
+		fprintf(stderr," readelf -s len = %zu, line = %s",buf_len,line_buf);
 #endif
 //		test first few characters to find first line of asm
 //		the following only works with "small" addresses
@@ -2900,26 +2950,38 @@ func_asm(pointer_data * global_func_list, int index)
 #endif
 				}
 			k = 0;
-			ret_val = 1;
-			while(ret_val != 0)
+			source_file_old = source_file;
+			line_nr_old = line_nr;
+			if((source_file_old != NULL) && (src_file_test != 0))
 				{
-#ifdef DBUG
-				fprintf(stderr,"about to call asm_2_src_inline\n");
-#endif
-				ret_val = asm_2_src_inline( &source_file, &line_nr);
-#ifdef DBUG
-				fprintf(stderr,"returned from asm_2_src_inline\n");
-				fprintf(stderr," asm_2_src_inline retval = %d, source file = %p, line_nr = %d\n",ret_val,source_file,line_nr);
-				fprintf(stderr," asm_2_src_inline retval = %d, source file = %s, line_nr = %d\n",ret_val,source_file,line_nr);
-#endif
-				if(ret_val == 0)
+				ret_val = 1;
+				inline_loop_count = 0;
+				while(ret_val != 0)
 					{
-					source_file_old = source_file;
-					line_nr_old = line_nr;
+#ifdef DBUG
+					fprintf(stderr,"about to call asm_2_src_inline\n");
+#endif
+					ret_val = asm_2_src_inline( &source_file, &line_nr);
+					inline_loop_count++;
+					if(inline_loop_count > 20)
+						{
+						ret_val =0;
+						fprintf(stderr,"inline depth too large in function %s for address 0x%"PRIx64"\n",this_function->function_name,this_asm->address);
+						}
+#ifdef DBUG
+					fprintf(stderr,"returned from asm_2_src_inline\n");
+					fprintf(stderr," asm_2_src_inline retval = %d, source file = %p, line_nr = %d\n",ret_val,source_file,line_nr);
+					fprintf(stderr," asm_2_src_inline retval = %d, source file = %s, line_nr = %d\n",ret_val,source_file,line_nr);
+#endif
+					if(ret_val == 0)
+						{
+						source_file_old = source_file;
+						line_nr_old = line_nr;
+						}
 					}
+				src_file_test = 0;
+				if(source_file != NULL)src_file_test = strcmp(source_file,old_module_path);
 				}
-			src_file_test = 0;
-			if(source_file != NULL)src_file_test = strcmp(source_file,old_module_path);
 			if((source_file_old != NULL) && (src_file_test != 0))
 				{
 				src_file_path_len = strlen(source_file_old);
@@ -3058,6 +3120,9 @@ func_asm(pointer_data * global_func_list, int index)
 					this_asm->sample_count[source_index] = loop_rva->sample_count[source_index];
 				if(target_index != 0)
 					this_asm->sample_count[target_index] = loop_rva->sample_count[target_index];
+				if(next_taken_index != 0)
+					this_asm->sample_count[next_taken_index] = loop_rva->sample_count[next_taken_index];
+				this_asm->next_taken_list = loop_rva->next_taken_list;
 				}
 			}
 		if(branch == 1)
@@ -3096,11 +3161,19 @@ func_asm(pointer_data * global_func_list, int index)
 			branch_count++;
 			}
 		previous_asm = this_asm;
+//		if((source_file_old != source_file) && (source_file_old != NULL))free((void *)source_file_old);
+//		if(source_file != NULL)free((void *)source_file);
 		}
 //	end of loop over objdump output
 
 #ifdef DBUG
 	fprintf(stderr," finished loop over line_buf, branch_count = %d, filename = %s\n", branch_count,this_function->function_name);
+	loop_asm = this_function->first_asm;
+	while(loop_asm != NULL)
+		{
+		fprintf(stderr,"address = 0x%"PRIx64"  %s   %s\n",loop_asm->address,loop_asm->encoding,loop_asm->asm_text);
+		loop_asm = loop_asm->next;
+		}
 #endif
 //identify the principal file for the function and create its structure
 
@@ -3277,8 +3350,11 @@ func_asm(pointer_data * global_func_list, int index)
 				this_bb->sample_count[source_index] += loop_asm->sample_count[source_index];
 			if(target_index != 0)
 				this_bb->sample_count[target_index] += loop_asm->sample_count[target_index];
+			if(next_taken_index != 0)
+				this_bb->sample_count[next_taken_index] += loop_asm->sample_count[next_taken_index];
 			this_bb->total_sample_count += loop_asm->total_sample_count;
 			if(this_bb->total_sample_count > max_bb_count)max_bb_count = this_bb->total_sample_count;
+//		these are defined by the last instruction of the block
 			this_bb->end_address = loop_asm->address;
 			this_bb->call = loop_asm->call;
 			this_bb->branch = loop_asm->branch;
@@ -3298,7 +3374,154 @@ func_asm(pointer_data * global_func_list, int index)
 					this_bb->source_line = loop_asm->principal_source_line;
 					}
 				}
-
+//		use next_taken_stack to count the number of taken branch targets that can get you to the current instruction
+//			this is the basic block execution count, 
+//			which equals the instruction_retired count for each instruction in the BB
+//			undetected targets of indirect branches could cause the instruction count to change within the BB
+//			test to update the stack
+			if(next_taken_stack != NULL)
+				{
+				next_taken_stack_loop = next_taken_stack;
+				if(next_taken_stack->address < loop_asm->address)
+					{
+//					pop off the stack, decrement count, free next_taken_stack_loop
+#ifdef DBUG
+					fprintf(stderr,"decrementing taken stack count from %lu by %lu at 0x%"PRIx64"\n",
+						next_taken_count_sum, next_taken_stack_loop->count, loop_asm->address);
+#endif
+					next_taken_count_sum -= next_taken_stack_loop->count;
+					next_taken_stack = next_taken_stack_loop->next;
+					free(next_taken_stack_loop);
+//					fprintf(stderr,"after decrement, next_taken_count_sum = %d at address 0x%"PRIx64"\n",
+//						next_taken_count_sum, loop_asm->address);
+					}
+				}
+			if(loop_asm->next_taken_list != NULL)
+				{
+				next_taken_loop = loop_asm->next_taken_list;
+				next_taken_stack_loop = next_taken_stack;
+				previous_stack = NULL;
+// 	outer loop is over next source addresses in the linked list for the current asm line, 
+//			which is a branch target for the list to be != NULL
+				while(next_taken_loop != NULL)
+					{
+					next_taken_address = next_taken_loop->address;
+#ifdef DBUG
+		fprintf(stderr," instruction IP = 0x%"PRIx64", next_taken_address = 0x%"PRIx64", count = %d\n",
+				loop_asm->address, next_taken_address,next_taken_loop->count);
+#endif
+//				test for valid next_taken_branch address
+					if(next_taken_address > end)
+						{
+//						fprintf(stderr," function %s has taken branch LBR source outside of function, LBR address = 0x%"PRIx64", current address = 0x%"PRIx64"\n",
+//							this_function->function_name,next_taken_address,loop_asm->address);
+						next_taken_loop = next_taken_loop->next;
+						continue;
+						}
+					else if(next_taken_address < loop_asm->address)
+						{
+//						fprintf(stderr," function %s has taken branch LBR source previous to current address, LBR address = 0x%"PRIx64", current address = 0x%"PRIx64"\n",
+//							this_function->function_name,next_taken_address,loop_asm->address);
+						next_taken_loop = next_taken_loop->next;
+						continue;
+						}
+//			valid address for next taken branch instruction, therefore find correct position in next_taken_stack
+					else
+						{
+//	fprintf(stderr," valid lbr address\n");
+						if(next_taken_stack == NULL)
+							{
+							next_taken_stack = (next_taken_struc_ptr) calloc(1,sizeof(next_taken_data));
+							if(next_taken_stack == NULL)
+								err(1,"failed to malloc next_taken_data stack in func_asm");
+							next_taken_stack->address = next_taken_loop->address;
+							next_taken_stack->count = next_taken_loop->count;
+							next_taken_count_sum = next_taken_loop->count;
+#ifdef DBUG
+						fprintf(stderr,"created next_taken_struc as stack was NULL for address 0x%"PRIx64", count = %lu\n",
+								next_taken_stack->address,next_taken_stack->count);
+#endif
+							}
+						else
+							{
+//	fprintf(stderr," valid lbr address, stack not NULL\n");
+							next_taken_stack_loop = next_taken_stack;
+							while(next_taken_stack_loop->address < next_taken_address)
+								{
+//	fprintf(stderr," valid lbr address, stack not NULL, walking stack\n");
+								previous_stack = next_taken_stack_loop;
+								next_taken_stack_loop = next_taken_stack_loop->next;
+								if(next_taken_stack_loop == NULL)break;
+								}
+							if(next_taken_stack_loop == NULL)
+								{
+//	fprintf(stderr," valid lbr address, stack not NULL, but next_taken_stack_loop is\n");
+								this_next_taken = (next_taken_struc_ptr) calloc(1,sizeof(next_taken_data));
+								if(this_next_taken == NULL)
+									err(1,"failed to malloc next_taken_data in func_asm");
+								this_next_taken->next = next_taken_stack_loop;
+								this_next_taken->address = next_taken_address;
+								this_next_taken->count = next_taken_loop->count;
+								next_taken_count_sum += next_taken_loop->count;
+								if(previous_stack != NULL)
+									{
+									this_next_taken->previous = previous_stack;
+									previous_stack->next = this_next_taken;
+									}
+#ifdef DBUG
+			fprintf(stderr,"created next_taken_struc to insert new entry at end for address 0x%"PRIx64", count = %lu, sum = %lu\n",
+								next_taken_stack->address,next_taken_stack->count,next_taken_count_sum);
+#endif
+								}
+//				found existing struc in stack, increment the count for the stack element with the current next_taken_address
+							else if(next_taken_stack_loop->address > next_taken_address)
+								{
+//	fprintf(stderr," valid lbr address, stack not NULL, but next_taken_stack_loop address 0x%"PRIx64"> next_taken_address 0x%"PRIx64"\n",
+//			next_taken_stack_loop->address, next_taken_address);
+								this_next_taken = (next_taken_struc_ptr) calloc(1,sizeof(next_taken_data));
+								if(this_next_taken == NULL)
+									err(1,"failed to malloc next_taken_data in func_asm");
+								this_next_taken->next = next_taken_stack_loop;
+								this_next_taken->address = next_taken_address;
+								this_next_taken->count = next_taken_loop->count;
+								next_taken_count_sum += next_taken_loop->count;
+#ifdef DBUG
+				fprintf(stderr,"created next_taken_struc to insert new entry for address 0x%"PRIx64", count = %lu, sum = %lu\n",
+								next_taken_stack->address,next_taken_stack->count,next_taken_count_sum);
+#endif
+								if(previous_stack != NULL)
+									{
+									this_next_taken->previous = previous_stack;
+									previous_stack->next = this_next_taken;
+									}
+								}
+//				found existing struc in stack, increment the count for the stack element with the current next_taken_address
+							else
+								{
+//	fprintf(stderr," valid lbr address, stack not NULL, next_taken_stack_loop address 0x%"PRIx64" = next_taken_address 0x%"PRIx64"\n",
+//			next_taken_stack_loop->address, next_taken_address);
+								next_taken_stack_loop->count += next_taken_loop->count;
+								next_taken_count_sum += next_taken_loop->count;
+#ifdef DBUG
+				fprintf(stderr,"found next_taken_struc entry for address 0x%"PRIx64", count = %lu, sum = %lu\n",
+								next_taken_stack->address,next_taken_stack->count,next_taken_count_sum);
+#endif
+								}
+							}
+						}
+					next_taken_loop = next_taken_loop->next;
+					}
+				}				
+//			test for active stack and update BB struc, asm struc, func_struc, module_struc and principal_process_struc 
+			if((next_taken_stack != NULL) && (loop_asm->asm_text != NULL))
+				{
+//				fprintf(stderr,"before sum, next_taken_count_sum = %d at address 0x%"PRIx64"\n",
+//					next_taken_count_sum, loop_asm->address);
+				this_bb->sample_count[bb_exec_index] = next_taken_count_sum;
+				this_bb->sample_count[sw_inst_retired_index] += next_taken_count_sum;
+				loop_asm->sample_count[sw_inst_retired_index] = next_taken_count_sum;
+				this_function->sample_count[sw_inst_retired_index] += next_taken_count_sum;
+				}
 			old_loop_asm = loop_asm;
 			loop_asm = loop_asm->next;
 			}
@@ -3347,6 +3570,8 @@ func_asm(pointer_data * global_func_list, int index)
 					this_bb->sample_count[source_index] += loop_asm->sample_count[source_index];
 				if(target_index != 0)
 					this_bb->sample_count[target_index] += loop_asm->sample_count[target_index];
+				if(next_taken_index != 0)
+					this_bb->sample_count[next_taken_index] += loop_asm->sample_count[next_taken_index];
 				this_bb->total_sample_count += loop_asm->total_sample_count;
 				if(this_bb->total_sample_count > max_bb_count)max_bb_count = this_bb->total_sample_count;
 				loop_asm = loop_asm->next;
@@ -3396,8 +3621,17 @@ func_asm(pointer_data * global_func_list, int index)
 		bb_addr_list[k].base = this_bb->address;
 		bb_addr_list[k].len = this_bb->end_address - this_bb->address;
 		bb_addr_list[k].struc_ptr = (void*)this_bb;
+		this_function->sample_count[bb_exec_index] += this_bb->sample_count[bb_exec_index];
 #ifdef DBUG
-		fprintf(stderr," this_bb %d, address = 0x%"PRIx64", end_address = 0x%"PRIx64", len = 0x%"PRIx64"\n",k,this_bb->address, this_bb->end_address,bb_addr_list[k].len);
+		fprintf(stderr," this_bb %d, address = 0x%"PRIx64", end_address = 0x%"PRIx64", len = 0x%"PRIx64"",k,this_bb->address, this_bb->end_address,bb_addr_list[k].len);
+		if(bb_exec_index != 0)
+			{
+			fprintf(stderr,", bb_exec = %d\n",this_bb->sample_count[bb_exec_index]);
+			}
+		else
+			{
+			fprintf(stderr,"\n");
+			}
 #endif
 		this_bb = this_bb->next;
 #ifdef DBUG
@@ -3405,6 +3639,12 @@ func_asm(pointer_data * global_func_list, int index)
 #endif
 		k++;
 		}
+	this_module->sample_count[bb_exec_index] += this_function->sample_count[bb_exec_index];
+	this_module->sample_count[sw_inst_retired_index] += this_function->sample_count[sw_inst_retired_index];
+	this_process->sample_count[bb_exec_index] += this_function->sample_count[bb_exec_index];
+	this_process->sample_count[sw_inst_retired_index] += this_function->sample_count[sw_inst_retired_index];
+	global_sample_count[bb_exec_index] += this_function->sample_count[bb_exec_index];
+	global_sample_count[sw_inst_retired_index] += this_function->sample_count[sw_inst_retired_index];
 
 //	do the binary search on the targets to connect the BB's by number
 //		then printout the contents to the dot file
@@ -3423,15 +3663,21 @@ func_asm(pointer_data * global_func_list, int index)
 			if((this_bb->target1 >= base) && (this_bb->target1 <= end))
 				{
 //		target1 is inside the function
-//				fprintf(stderr,"calling binsearch for address 0x%"PRIx64"\n",this_bb->target1);
+#ifdef DDBUG
+				fprintf(stderr,"calling binsearch for address 0x%"PRIx64"\n",this_bb->target1);
+#endif
 				target_bb = (basic_block_struc_ptr) binsearch(bb_addr_list,bb_count,this_bb->target1);
-//				fprintf(stderr,"\t\"Basic Block %d\"->\"Basic Block %d\";\n",j,target_bb->block_count);
+#ifdef DDBUG
+				fprintf(stderr,"\t\"Basic Block %d\"->\"Basic Block %d\";\n",j,target_bb->block_count);
+#endif
 				fprintf(dot,"\t\"Basic Block %d\"->\"Basic Block %d\";\n",j,target_bb->block_count);
 				}
 			else
 				{
 				deadbeef++;
-//				fprintf(stderr,"\t\"Basic Block %d\"->\"Addr %d\";\n",j,deadbeef);
+#ifdef DDBUG
+				fprintf(stderr,"\t\"Basic Block %d\"->\"Addr %d\";\n",j,deadbeef);
+#endif
 				fprintf(dot,"\t\"Basic Block %d\"->\"Addr %d\";\n",j,deadbeef);
 				if(this_bb->call != 0)
 					fprintf(dot,"\t\"Addr %d\"->\"Basic Block %d\";\n",deadbeef,this_bb->block_count+1);
@@ -3439,7 +3685,9 @@ func_asm(pointer_data * global_func_list, int index)
 			}
 		if(this_bb->target2 != 0)
 			{
-//			fprintf(stderr,"\t\"Basic Block %d\"->\"Basic Block %d\";\n",j,this_bb->block_count+1);
+#ifdef DDBUG
+			fprintf(stderr,"\t\"Basic Block %d\"->\"Basic Block %d\";\n",j,this_bb->block_count+1);
+#endif
 			fprintf(dot,"\t\"Basic Block %d\"->\"Basic Block %d\";\n",j,this_bb->block_count+1);
 			}
 		this_bb = this_bb->next;
@@ -3566,13 +3814,27 @@ func_asm(pointer_data * global_func_list, int index)
 			loop_asm = loop_asm->next;
 			if(loop_asm == NULL)break;
 			}
+#ifdef DBUG
+		fprintf(stderr," increment function %s bb_exec count by %d, to %d, bb_exec_index = %d\n",this_function->function_name,
+			this_bb->sample_count[bb_exec_index], this_function->sample_count[bb_exec_index], bb_exec_index);
+#endif
 		this_bb = this_bb->next;
 		k++;
 		}
+
+//	fprintf(stderr," module sw inst = %d, bb_exec = %d\n",
+//		this_module->sample_count[sw_inst_retired_index],this_module->sample_count[bb_exec_index]);
+//	fprintf(stderr," process sw inst = %d, bb_exec = %d\n",
+//		this_process->sample_count[sw_inst_retired_index],this_process->sample_count[bb_exec_index]);
+//	fprintf(stderr," global sw inst = %d, bb_exec = %d\n",
+//		global_sample_count[sw_inst_retired_index],global_sample_count[bb_exec_index]);
+
 #ifdef DBUG
 	fprintf(stderr,"finished loop of printing asm/BB's\n");
 #endif
 //		final data row is the function total
+	branch_eval(this_function->sample_count);
+	this_function->called_branch_eval = 1;
 	fprintf(list,"[,%d,,,,,, \"%s\",",k+1,this_function->function_name);
 //	branch_eval already called from hotlist_function
 	for(j=0; j<num_col; j++)fprintf(list," %d,",this_function->sample_count[ global_event_order->order[j].index ]);
@@ -3580,7 +3842,7 @@ func_asm(pointer_data * global_func_list, int index)
 	fprintf(list,"]\n");
 
 //  insert */ here
-	fclose(objout);
+	pclose(objout);
 	fclose(list);
 	return this_function->total_sample_count;
 }
@@ -3711,8 +3973,8 @@ func_src(pointer_data * global_func_list, int index)
 		access_status = access(local_path, R_OK);
 		if(access_status !=0)
 			{
-			fprintf(stderr,"cannot find source file %s for function %s, only asm will be available\n",
-				local_path, this_function->function_name);
+			fprintf(stderr,"cannot find source file %s for function %s, module = %s, only asm will be available\n",
+				local_path, this_function->function_name,this_module->path);
 			return;
 			}
 		}
@@ -3731,6 +3993,14 @@ func_src(pointer_data * global_func_list, int index)
 			if(loop_asm->principal_source_line < first_line_number) first_line_number = loop_asm->principal_source_line;
 			if(loop_asm->principal_source_line > last_line_number) last_line_number = loop_asm->principal_source_line;
 			if(initial_line == -1) initial_line = loop_asm->principal_source_line;
+			if(loop_asm->principal_source_line <= 0)
+				{
+				fprintf(stderr,"source file, %s, for function %s, in module %s, has bad debug information, line number = %d,  <= 0\n",
+					this_function->principal_file->principal_file_name,this_function->function_name,this_module->path,
+					loop_asm->principal_source_line);
+				fprintf(stderr,"                      only asm will be available\n");
+				return;
+				}
 			}
 		loop_asm = loop_asm->next;
 		}
@@ -3845,6 +4115,7 @@ func_src(pointer_data * global_func_list, int index)
 			{
 //		valid debug data pointing to correct file
 			i = loop_asm->principal_source_line - first_line_number - 1;
+			if(i < 0)i = 0;
 #ifdef DBUG
 			fprintf(stderr,"correct principal file, array index = %d\n",i);
 #endif
@@ -3854,6 +4125,7 @@ func_src(pointer_data * global_func_list, int index)
 		else
 			{
 			i = previous_line - first_line_number -1;
+			if(i < 0)i = 0;
 #ifdef DBUG
 			fprintf(stderr,"incorrect principal file, array index = %d\n",i);
 #endif
@@ -3980,15 +4252,21 @@ void
 create_dir(void)
 {
 	char spread[]="./spreadsheets", asmd[]="./spreadsheets/asm", cfg[]="./spreadsheets/cfg", src[]="./spreadsheets/src",cg[]="./spreadsheets/cg";
-	char mkdir[]="mkdir ";
-	int spread_len, asm_len, cfg_len, src_len, mkdir_len, exists_len, dir_len;
+	char mkdir[]="mkdir ", date[]="date", mv_spread[]="mv ./spreadsheets ";
+	int spread_len, asm_len, cfg_len, src_len, mkdir_len, exists_len, dir_len, access_status, ret_val;
 	char line_buf[2048];
-	int line_buf_len = 2048, line_len;
+	int line_buf_len = 2048, line_len, date_len;
 	char exists[]="File exists";
-	char * cmd, *dir[5];
+	char * cmd, *dir[5], *date_str, *new_spread, *mv_cmd;
 	int i,j,k;
 	FILE * cmdout;
 	int exists_test;
+	time_t t;
+	struct tm tm;
+	struct stat st;
+	char time_str[32];
+	char path[PATH_MAX];
+	char command[PATH_MAX];
 
 /*
 	spread_len = strlen(spread);
@@ -3996,6 +4274,19 @@ create_dir(void)
 	cfg_len = strlen(cfg);
 	src_len = strlen(src);
 */
+
+	if((stat(spread,&st) !=-1) || (errno != ENOENT))
+		{
+		time(&t);
+		localtime_r(&t, &tm);
+		strftime(time_str, sizeof(time_str), "%F-%H:%M:%S", &tm);
+		sprintf(path,"%s-%s", spread, time_str);
+		fprintf(stderr,"move spreadsheets to %s\n",path);
+		sprintf(command,"%s%s",mv_spread, path);
+		ret_val = system(command);
+		if(ret_val == -1)
+			err(1,"failed to move spreadsheets in create_dir");
+		}
 	mkdir_len = strlen(mkdir);
 	exists_len = strlen(exists);
 
@@ -4051,6 +4342,7 @@ create_dir(void)
 			}
 		free(cmd);
 		}
+	pclose(cmdout);
 }
 
 void 
@@ -4178,6 +4470,8 @@ inst_working_set(module_struc_ptr this_module)
 		}
 	fprintf(list2," %d\n",sum256);
 	fprintf(stderr,"final_count = %d, interupt_count = %d\n",final_count,interupt_count);
+	free(filename);
+	free(filename2);
 	free(cachelines);
 	return;
 }

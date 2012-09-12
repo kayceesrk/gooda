@@ -80,6 +80,10 @@ There are three installations required to be able to do performance analysis in 
    As of this version of Gooda, you can collect a very complete set of events on:
    - a Intel Westmere based dual socket system (model 44, 47) using the run_record_cyc_wsm.sh
    - a Intel SandyBridge desktop (model 42) using the run_record_cyc_snb.sh
+   - a Intel IvyBridge desktop (model 58) using the run_record_cyc_ivb.sh
+
+  On SNB and IVB systems you can collect data for a call count graph plus tabular displays with the script gooda_cg.sh
+  On SNB and IVB systems you can collect data for basic block execution counts with the script gooda_cg.sh
 
    You can tell the model number by looking at /proc/cpuinfo:
    $ cat /proc/cpuinfo

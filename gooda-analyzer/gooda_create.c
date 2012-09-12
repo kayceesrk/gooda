@@ -322,6 +322,7 @@ sample_struc_create(void)
 		free(this_struc);
 		return NULL;
 		}	
+	if(this_struc != NULL)sample_struc_count++;
         return this_struc;
 }
 
@@ -474,6 +475,7 @@ asm_struc_create(void)
 		return NULL;
 		}	
 
+	if(this_struc != NULL)asm_struc_count++;
         return this_struc;
 }
 
@@ -510,6 +512,7 @@ basic_block_struc_create(void)
 		return NULL;
 		}	
 
+	if(this_struc != NULL)basic_block_struc_count++;
         return this_struc;
 }
 

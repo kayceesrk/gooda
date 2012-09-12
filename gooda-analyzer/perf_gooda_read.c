@@ -26,6 +26,8 @@ limitations under the License.
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <err.h>
+#include <sys/time.h>
+#include <sys/resource.h>
 #include "perf_event.h"
 #include "gooda.h"
 #include "perf_gooda.h"
@@ -37,6 +39,10 @@ int num_comm=0,num_fork=0,num_sample=0,num_mmap=0,num_lost=0,num_exit=0,num_thro
 uint64_t tsc_now=0, this_time=0;
 int lbr_flag = 0, lbr_any = 0, lbr_ret = 0, lbr_call = 0, lbr_ind = 0;
 
+uint64_t base_kern_address;
+uint32_t pid_ker = 0xFFFFFFFF, tid_ker = 0;
+int aggregate_func_list=0;
+
 mmap_struc_ptr  mmap_stack = NULL, mmap_current = NULL, kernel_mmap, previous_mmap;
 comm_struc_ptr  comm_stack = NULL, comm_current = NULL;
 process_struc_ptr process_stack=NULL, active_proc_stack=NULL, current_process=NULL;
@@ -47,9 +53,11 @@ derived_sample_data* derived_events = NULL;
 
 int num_process=0, global_func_count=0, global_sample_count_in_func=0,global_branch_sample_count=0;
 int bad_rva =0, global_rva = 0,bad_sample_count=0,total_function_sample_count = 0;
-int asm_cutoff = 20, func_cutoff = 50, source_cutoff = 50, max_bb = 500, max_branch = 10;
+int asm_cutoff = 0, func_cutoff = 50, source_cutoff = 50, max_bb = 500, max_branch = 10;
+int asm_cutoff_def = 20, asm_cutoff_big = 200, big_func_count = 500;
 int num_branch, num_sub_branch, num_derived;
-int source_index=0, target_index=0, source_column = 0, target_column = 0;
+int source_index=0, target_index=0, bb_exec_index = 0, sw_inst_retired_index = 0, next_taken_index = 0;
+int source_column = 0, target_column = 0, bb_exec_column = 0, sw_inst_retired_column = 0, next_taken_column = 0;
 int *id_array, num_cores, num_sockets=2, *socket, num_events;
 uint64_t min_event_id=0xFFFFFFFFFFFFFFFFUL;
 int default_hash_length=10000, max_default_entries=2000;
@@ -62,6 +70,9 @@ char **fixed_name_list, **branch_name_list;
 int * fixed_event_index;
 int column_flag, debug_flag=0;
 char return_event[]="br_inst_retired:near_return";
+char near_taken_event[]="br_inst_retired:near_taken";
+char lbr_event[]="rob_misc_events:lbr_inserts";
+int total_lbr_entries=0;
 
 int global_flag1 = 0, global_flag2 = 0;
 event_attr_ptr global_attrs;
@@ -71,6 +82,8 @@ int family, model;
 char *arch, *cpu_desc;
 int min_id_event=-1, max_id_event=-1;
 char *gooda_dir = GOODA_DIR;
+int sample_struc_count=0, asm_struc_count=0, basic_block_struc_count=0;
+uint64_t total_struc_size;
 
 int num_lbr;
 typedef struct lbr_record_struc{
@@ -108,6 +121,12 @@ static int nr_ids;			/* number of elements in event_ids */
 static int read_attr_from_file(bufdesc_t *desc, struct perf_file_attr *attrs);
 
 static void (*read_feature[HEADER_LAST_FEATURE])(bufdesc_t *, struct perf_file_header *);
+
+static inline int
+get_count(void)
+{
+        return num_events*(num_cores+num_sockets+1) + num_branch + num_sub_branch + num_derived + 1;
+}
 
 /*
  * read a chunk of buffer. Use actual file read for now.
@@ -758,9 +777,12 @@ display_sample(bufdesc_t *desc, struct perf_event_header *ehdr)
 		if (id == -1)
 			errx(1, "cannot resolve PERF_SAMPLE_ID, event does not have PERF_SAMPLE_ID set");
 
-		for (i = 0; i < nr_ids; i++)
-			if (id == event_ids[i].id)
-				break;
+//		for (i = 0; i < nr_ids; i++)
+//			if (id == event_ids[i].id)
+//				break;
+		if(id < min_event_id)errx(1, "BAD EVENT ID = %ld, min_event_id = %ld\n",event_id,min_event_id);
+                i =  id_array[(int) (id - min_event_id)];
+		if(i > num_events)errx(1, "BAD EVENT ID orig = %ld, event_id = %ld\n",orig_event_id,event_id);
 		if (i == nr_ids)
 			errx(1, "cannot find id %"PRIu64" to parse PERF_SAMPLE_READ", id);
 
@@ -967,6 +989,30 @@ display_sample(bufdesc_t *desc, struct perf_event_header *ehdr)
                 fprintf(stderr,"failed to increment module struc for pid = %d, tid = %d, ip = 0x%"PRIx64"\n",pid.pid,pid.tid,ip);
                 err(1,"failed to increment module for sample");
                 }
+//	check if address is greater than base address of kernel
+//	if so also add sample to psuedo pid = -1 to aggregate all kernel space activity
+	if(ip >= base_kern_address)
+		{
+		local_mmap = bind_sample(pid_ker,ip,this_time);
+		if(local_mmap == NULL)
+			{
+//#ifdef DBUGA
+			fprintf(stderr," could not find mmap for sample with pid = %u, ip = 0x%"PRIx64", at time = 0x%"PRIx64"\n",pid.pid,ip,this_time);
+        //      	err(1,"failed to find mmap for sample");
+//#endif
+			return;
+			}
+		principal_process = local_mmap->principal_process;
+		if(local_mmap->principal_process == NULL)
+			principal_process = find_principal_process(local_mmap);
+		this_module = local_mmap->this_module;
+		if(local_mmap->this_module == NULL)
+			this_module = bind_mmap(local_mmap);
+
+//		fprintf(stderr,"kern addr: princ_proc = %p, this_mod = %p, local_mmap = %p, ip = 0x%"PRIx64"\n",
+//			principal_process,this_module,local_mmap,ip);
+		ret = increment_module_struc(pid_ker,tid_ker,ip,event_id,cpu.cpu,local_mmap,time_enabled, time_running);
+		}
 
 //	find mmap's for source & destination
 //	determine module for principal process
@@ -976,38 +1022,76 @@ display_sample(bufdesc_t *desc, struct perf_event_header *ehdr)
 #ifdef DBUG
 	fprintf(stderr," return_filtered_return = %d\n",event_list[event_id].return_filtered_return);
 #endif
-	if(event_list[event_id].return_filtered_return != 1)return;
-	lbr_ret = 1;
-#ifdef DBUG
-	fprintf(stderr," processing LBRs for filtered returns\n");
-#endif
-	for(i=0;i<num_lbr; i++)
+	if(event_list[event_id].return_filtered_return == 1)
 		{
+		lbr_ret = 1;
+#ifdef DBUG
+		fprintf(stderr," processing LBRs for filtered returns\n");
+#endif
+		for(i=0;i<num_lbr; i++)
+			{
 //	process the source = ip(return)
-		local_mmap = bind_sample(pid.pid,lbr_data[i].source,this_time);
-		if(local_mmap == NULL)
-			{
+			local_mmap = bind_sample(pid.pid,lbr_data[i].source,this_time);
+			if(local_mmap == NULL)
+				{
 #ifdef DBUGA
-			fprintf(stderr," bind sample failed for source %d at 0x%"PRIx64"\n",i,lbr_data[i].source);
+				fprintf(stderr," bind sample failed for source %d at 0x%"PRIx64"\n",i,lbr_data[i].source);
 #endif
-			continue;
-			}
-		if(local_mmap->principal_process == NULL)principal_process = find_principal_process(local_mmap);
-		if(local_mmap->this_module == NULL)this_module = bind_mmap(local_mmap);
+				continue;
+				}
+			if(local_mmap->principal_process == NULL)principal_process = find_principal_process(local_mmap);
+			if(local_mmap->this_module == NULL)this_module = bind_mmap(local_mmap);
 //	process the destination (call site + 1 instructions)
-		target_mmap = bind_sample(pid.pid,lbr_data[i].destination,this_time);
+			target_mmap = bind_sample(pid.pid,lbr_data[i].destination,this_time);
 		
-		if(target_mmap == NULL)
-			{
+			if(target_mmap == NULL)
+				{
 #ifdef DBUGA
-			fprintf(stderr," bind sample failed for destination %d at 0x%"PRIx64"\n",i,lbr_data[i].destination);
+				fprintf(stderr," bind sample failed for destination %d at 0x%"PRIx64"\n",i,lbr_data[i].destination);
 #endif
-			continue;
+				continue;
+				}
+			if(target_mmap->principal_process == NULL)principal_process = find_principal_process(target_mmap);
+			if(target_mmap->this_module == NULL)this_module = bind_mmap(target_mmap);
+			ret = increment_return(local_mmap, lbr_data[i].source, lbr_data[i].destination, target_mmap);
+			ret = increment_call_site(local_mmap, lbr_data[i].source, lbr_data[i].destination, target_mmap);
 			}
-		if(target_mmap->principal_process == NULL)principal_process = find_principal_process(target_mmap);
-		if(target_mmap->this_module == NULL)this_module = bind_mmap(target_mmap);
-		ret = increment_return(local_mmap, lbr_data[i].source, lbr_data[i].destination, target_mmap);
-		ret = increment_call_site(local_mmap, lbr_data[i].source, lbr_data[i].destination, target_mmap);
+		}
+	else if(event_list[event_id].near_taken_filtered_any_taken == 1)
+		{
+		lbr_any = 1;
+#ifdef DBUG
+		fprintf(stderr," processing LBRs for near_taken filtered on any\n");
+#endif
+		total_lbr_entries += num_lbr;
+
+		for(i=0;i<num_lbr-1; i++)
+			{
+//	process the target = ip(target)
+			local_mmap = bind_sample(pid.pid,lbr_data[i].destination,this_time);
+			if(local_mmap == NULL)
+				{
+#ifdef DBUGA
+				fprintf(stderr," bind sample failed for destination %d at 0x%"PRIx64"\n",i+1,lbr_data[i].destination);
+#endif
+				continue;
+				}
+			if(local_mmap->principal_process == NULL)principal_process = find_principal_process(local_mmap);
+			if(local_mmap->this_module == NULL)this_module = bind_mmap(local_mmap);
+//	process the next taken branch (lbr_data[i+1].source)
+			target_mmap = bind_sample(pid.pid,lbr_data[i+1].source,this_time);
+		
+			if(target_mmap == NULL)
+				{
+#ifdef DBUGA
+				fprintf(stderr," bind sample failed for destination %d at 0x%"PRIx64"\n",i+1,lbr_data[i+1].source);
+#endif
+				continue;
+				}
+			if(target_mmap->principal_process == NULL)principal_process = find_principal_process(target_mmap);
+			if(target_mmap->this_module == NULL)this_module = bind_mmap(target_mmap);
+			ret = increment_next_taken_site(local_mmap, lbr_data[i].destination, lbr_data[i+1].source, target_mmap);
+			}
 		}
 #endif
 	free(lbr_data);
@@ -1840,12 +1924,13 @@ read_event_desc(bufdesc_t *desc, struct perf_file_header *hdr)
 				fputc(',',stderr);
 			fprintf(stderr," %"PRIu64, id);
 //#endif
-		}
+			}
 //#ifdef DBUG
 		if (nri && j == nri)
 			fprintf(stderr," }\n");
 //#endif
 
+#ifdef ANALYZE
 //	process event_desc, create map of event IDs to event numbers and call init_order
 
 		global_attrs[i].name = str;
@@ -1881,19 +1966,25 @@ read_event_desc(bufdesc_t *desc, struct perf_file_header *hdr)
 		event_list[i].return_filtered_return = 0;
 		if((strcasecmp(event_list[i].name,return_event) == 0) &&
 			(attr.branch_sample_type ==  PERF_SAMPLE_BRANCH_ANY_RETURN))event_list[i].return_filtered_return = 1;
+		event_list[i].near_taken_filtered_any_taken = 0;
+		if((strcasecmp(event_list[i].name,near_taken_event) == 0) &&
+			(attr.branch_sample_type ==  PERF_SAMPLE_BRANCH_ANY))event_list[i].near_taken_filtered_any_taken = 1;
+		if((strcasecmp(event_list[i].name,lbr_event) == 0) &&
+			(attr.branch_sample_type ==  PERF_SAMPLE_BRANCH_ANY))event_list[i].near_taken_filtered_any_taken = 1;
 
 #ifdef DBUG
 		fprintf(stderr," event_list[%d] name = %s, period = %ld, config = 0x%"PRIx64"\n",
 			i,event_list[i].name,event_list[i].period,event_list[i].config);
-		fprintf(stderr," branch filters: branch_sample_type = 0x%"PRIx64", return_filtered = %d\n",
-			event_list[i].branch_sample_type,event_list[i].return_filtered_return);
+		fprintf(stderr," branch filters: branch_sample_type = 0x%"PRIx64", return_filtered = %d, near_taken_filtered = %d\n",
+			event_list[i].branch_sample_type,event_list[i].return_filtered_return,event_list[i].near_taken_filtered_any_taken);
+#endif
 #endif
 
 	}
+#ifdef ANALYZE
 #ifdef DBUG
 	fprintf(stderr," max_id = %ld, min_event_id = %ld\n",max_id, min_event_id);
 #endif
-#ifdef ANALYZE
 	num_events = nre;
 	id_array = (int*)malloc((int)(max_id - min_event_id + 1)*sizeof(int));
 	if(id_array == NULL)
@@ -1977,12 +2068,14 @@ read_cpu_topology(bufdesc_t *desc, struct perf_file_header *hdr)
 	num_cores = core_count;
 	num_sockets = socket_count;
 
+
 	fprintf(stderr," num_cores = %d, num_sockets = %d\n",num_cores,num_sockets);
 
 	init_order();
 	num_branch = global_event_order->num_branch;
 	num_sub_branch = global_event_order->num_sub_branch;
 	num_derived = global_event_order->num_derived;
+	init();
 //      create global_sample_count array
         global_sample_count = (int*) malloc((num_events*(num_cores + num_sockets +1) + num_branch + num_sub_branch + num_derived + 1)*sizeof(int));
         if(global_sample_count == NULL)
@@ -2393,13 +2486,17 @@ check4gooda(bufdesc_t *desc)
 
 static void usage(void)
 {
-	fprintf(stderr,"Usage: perf [-v] [-h] [-i] perf_data_file [-n] Val\n");
+	fprintf(stderr,"Usage: perf [-v] [-h] [a] [-i] perf_data_file [-n] Val\n");
 	fprintf(stderr," by default gooda will try to read perf data from ./perf.data\n");
-	fprintf(stderr," use the -i option and the preferred file name to change this\n");
+	fprintf(stderr,"   use the -i option and the preferred file name to change this\n");
 	fprintf(stderr," by default gooda will attempt to create annoted disassembly and source listings, and CFG displays\n");
-	fprintf(stderr," for the hottest 20 functions. This limit can be changed by using the -n option followed by the number\n");
-	fprintf(stderr," of functions that you desire having this more detailed data for.\n");
-	fprintf(stderr," Increasing the number will slightly increase the runtime\n");
+	fprintf(stderr,"   for the hottest 20 functions. If there are more than 500 functions this limit is kicked up to 200\n");
+	fprintf(stderr,"   This limit can be changed by using the -n option followed by the number\n");
+	fprintf(stderr,"   of functions that you desire having this more detailed data for.\n");
+	fprintf(stderr,"   Increasing the number will slightly increase the runtime\n");
+	fprintf(stderr," Adding the option -a will result in the aggregated kernel sample process pid = -1 also showing up\n");
+	fprintf(stderr,"   in the function list and source, asm and cfg's\n");
+	fprintf(stderr,"   thus the kernel samples will be effectively double counted\n");
 }
 
 /*
@@ -2408,17 +2505,18 @@ static void usage(void)
 int
 main(int argc, char **argv)
 {
-	int c,i,j,k,num_col,len;
+	int c,i,j,k,num_col,len,retval;
 	bufdesc_t desc;
         pointer_data * global_func_list;
 	column_flag = 0;
 	char def_file[] = "perf.data";
 	char * file_name;
+	struct rusage r_usage;
 
 	file_name = def_file;
-	
+	asm_cutoff = asm_cutoff_def;	
 
-	while ((c= getopt(argc, argv, "i:h:n:v")) != -1) {
+	while ((c= getopt(argc, argv, "i:n:v:ah")) != -1) {
 		switch(c) {
 		case 'v':
 			fprintf(stderr,"perf_reader v%s\n", PERF_READER_VERSION);
@@ -2437,6 +2535,10 @@ main(int argc, char **argv)
 		case 'n':
 			asm_cutoff = atoi(optarg);
 			break;
+		case 'a':
+			aggregate_func_list = 1;
+			fprintf(stderr,"function list will include functions in aggregated psuedo kernel process, pid = -1\n");
+			break;
 		default:
 			errx(1, "invalid argument key");
 		}
@@ -2449,16 +2551,14 @@ main(int argc, char **argv)
 	desc.fd = open(file_name, O_RDONLY);
 	if (desc.fd == -1)
 		err(1, "cannot open %s", argv[1]);
-#ifdef ANALYZE
-	init();
-#endif
 
         if (detect_piped_file(&desc))
                 read_pipe_header(&desc);
         else
+		{
                 read_file_header(&desc);
-
-	check4gooda(&desc);
+		check4gooda(&desc);
+		}
 	parse(&desc);
 
 	fprintf(stderr,"finished reading input data file, commencing analysis\n");
@@ -2474,6 +2574,9 @@ main(int argc, char **argv)
 	column_flag = 1;
 #endif
         reorder_process();
+
+	global_event_order = set_order(global_sample_count);
+
 	if(global_func_count >= 1){
 	        global_func_list = sort_global_func_list();
 //		create a sorted list of sources and targets for each function
@@ -2482,12 +2585,15 @@ main(int argc, char **argv)
 //		translate branch target/source addresses to function pointers and create a call count graph
 		if(lbr_ret !=0)
 			hotspot_call_graph(global_func_list);
-//		printf out the function spreadsheet
-        	hotspot_function( global_func_list);
 
 		column_flag = 0;
+		if((asm_cutoff == asm_cutoff_def) && (global_func_count > big_func_count))asm_cutoff = asm_cutoff_big;
 //		loop through the hottest "asm_cuttoff" functions and create asm, source and cfg files
 	        hot_list(global_func_list);
+//		print out the function spreadsheet
+        	hotspot_function( global_func_list);
+//		print out the process/module spreadsheet
+		process_table();
 
 		num_col = num_events + global_event_order->num_branch + global_event_order->num_sub_branch +global_event_order->num_derived + 1;
         	fprintf(stderr," bad rva count = %d, with %d samples, out of global_rva = %d, with %d total samples in modules with functions and %d total samples\n",
@@ -2506,6 +2612,22 @@ main(int argc, char **argv)
 			fprintf(stderr,"\n");
 			}
 */
+		fprintf(stderr," total_lbr_entries = %d\n",total_lbr_entries);
+		total_struc_size = (uint64_t)sample_struc_count*(sizeof(sample_data) + sizeof(int)*get_count());
+		fprintf(stderr," total sample_struc's created = %d, for a total size of %ld\n",sample_struc_count, total_struc_size);
+		total_struc_size = (uint64_t)asm_struc_count*(sizeof(asm_data) + sizeof(int)*get_count());
+		fprintf(stderr," total asm_struc's created = %d, for a total size of %ld\n",asm_struc_count, total_struc_size);
+		total_struc_size = (uint64_t)basic_block_struc_count*(sizeof(basic_block_data) + sizeof(int)*get_count());
+		fprintf(stderr," total basic_block_struc's created = %d for a total size of %ld\n",basic_block_struc_count, total_struc_size);
+		retval = getrusage(RUSAGE_SELF,&r_usage);
+		if(retval != 0)
+			{
+			fprintf(stderr,"getrusage failed\n");
+			}
+		else
+			{
+		retval = fprintf(stderr," total memory usage from getrusage = %ld\n",r_usage.ru_maxrss);
+			}
 		fprintf(stderr,"normal termination\n");
 		}
 	else
@@ -2513,6 +2635,7 @@ main(int argc, char **argv)
 		fprintf(stderr,"No data in IP ranges defined by functions, exiting\n");
 		}
 #endif
+
 	close(desc.fd);
 	free(event_ids);
 	return 0;
