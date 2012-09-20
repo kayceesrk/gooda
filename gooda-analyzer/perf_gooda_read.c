@@ -780,6 +780,7 @@ display_sample(bufdesc_t *desc, struct perf_event_header *ehdr)
 //		for (i = 0; i < nr_ids; i++)
 //			if (id == event_ids[i].id)
 //				break;
+
 		if(id < min_event_id)errx(1, "BAD EVENT ID = %ld, min_event_id = %ld\n",event_id,min_event_id);
                 i =  id_array[(int) (id - min_event_id)];
 		if(i > num_events)errx(1, "BAD EVENT ID orig = %ld, event_id = %ld\n",orig_event_id,event_id);
@@ -1480,9 +1481,9 @@ read_one_buildid(bufdesc_t *desc, struct perf_event_header *ehdr)
         raw_read_buffer(desc, str, len);
 #ifdef DBUG
         for (i = 0; i < BUILD_ID_SIZE; i++) {
-                printf("%02x", b.build_id[i]);
+                fprintf(stderr,"%02x", b.build_id[i]);
         }
-        printf(" %s\n", str);
+        fprintf(stderr," %s\n", str);
 #endif
         free(str);
 }
@@ -1930,7 +1931,6 @@ read_event_desc(bufdesc_t *desc, struct perf_file_header *hdr)
 			fprintf(stderr," }\n");
 //#endif
 
-#ifdef ANALYZE
 //	process event_desc, create map of event IDs to event numbers and call init_order
 
 		global_attrs[i].name = str;
@@ -1946,11 +1946,13 @@ read_event_desc(bufdesc_t *desc, struct perf_file_header *hdr)
 				break;
 				}
 			}
+#ifdef ANALYZE
 		if(period_test == 0)
 			{
 			fprintf(stderr," event does not have period, data cannot be analyzed, event = %s\n",str);
 			err(1,"from read_event_desc, bad event programming during collection, not analyzable, fixed periods are required\n");
 			}
+#endif
 
 		event_list[i].name = (char *) malloc((last+1)*sizeof(char));
 		if(event_list[i].name == NULL)
@@ -1978,10 +1980,8 @@ read_event_desc(bufdesc_t *desc, struct perf_file_header *hdr)
 		fprintf(stderr," branch filters: branch_sample_type = 0x%"PRIx64", return_filtered = %d, near_taken_filtered = %d\n",
 			event_list[i].branch_sample_type,event_list[i].return_filtered_return,event_list[i].near_taken_filtered_any_taken);
 #endif
-#endif
 
 	}
-#ifdef ANALYZE
 #ifdef DBUG
 	fprintf(stderr," max_id = %ld, min_event_id = %ld\n",max_id, min_event_id);
 #endif
@@ -2002,7 +2002,6 @@ read_event_desc(bufdesc_t *desc, struct perf_file_header *hdr)
 		}
 
 //	insert_event_names(nre,name_list);
-#endif
 }
 
 static void
