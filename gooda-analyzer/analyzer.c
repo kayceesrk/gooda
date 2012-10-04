@@ -110,6 +110,8 @@ binsearch(addr_list_data* list, int num, uint64_t address)
 //	fprintf(stderr," address of list = 0x%"PRIx64", num = %d, address = 0x%"PRIx64"\n",list,num,address);
 //	for(i=0; i<num; i++)
 //		fprintf(stderr," address of list[%d] = 0x%"PRIx64", base = 0x%"PRIx64", len = 0x%"PRIx64", ptr = 0x%"PRIx64"\n",i,&list[i],list[i].base,list[i].len,list[i].struc_ptr);
+//	fprintf(stderr," address = 0x%"PRIx64", list[0].base = 0x%"PRIx64", list[num-1].base = 0x%"PRIx64", list[num-1].len = 0x%"PRIx64"\n",
+//		address,list[0].base, list[num-1].base, list[num-1].len);
 	if(address > list[num-1].base+list[num-1].len)return NULL;
 	if(address >= list[num-1].base)return list[num-1].struc_ptr;
 	if(address < list[0].base)return NULL;
@@ -1788,9 +1790,9 @@ hotspot_function(pointer_data * global_func_list)
 	for(i=0; i < num_col; i++)fprintf(sh," \"%s\",",global_event_order->order[i].name);
 //	fprintf(sh,"null],\n");
 	fprintf(sh,"],\n");
-	fprintf(sh,"[,,,");
-	for(k=0;k<5;k++)fprintf(sh,"\"%d:0\",",k);
-	for(k=0;k<num_col;k++)fprintf(sh,"\"%d%s\",",5+global_event_order->order[k].base_col,global_event_order->order[k].ctrl_string);
+	fprintf(sh,"[,,,\"0:4\",");
+	for(k=1;k<5;k++)fprintf(sh,"\"0_%d:0\",",k);
+	for(k=0;k<num_col;k++)fprintf(sh,"\"%d%s\",",1+global_event_order->order[k].base_col,global_event_order->order[k].ctrl_string);
 	fprintf(sh,"],\n");
 //	fprintf(sh,"[null,\"MSR Programmings\",null,null,null,null,");
 	fprintf(sh,"[,,,\"MSR Programmings\",null,null,null,null,");
@@ -2416,16 +2418,14 @@ x86_branch_identify(char* field2)
 //	test for mod rm
 	if(
 		((field2[0] == '4') && ((field2[1] - '0') >= 0) && ((field2[base_char+1] - '0') < 10)) ||
-		((field2[0] == '4') && ((field2[1] - '0') >= 0) && ((field2[base_char+1] - 'a') < 6)) 
-			)
-		{
-		base_char=2;
+		((field2[0] == '4') && ((field2[1] - 'a') >= 0) && ((field2[base_char+1] - 'a') < 6)) 
+			)base_char=2;
+
 		byte_field[0] = field2[base_char+2];
 		byte_field[1] = field2[base_char+3];
 		byte_field[2] = '\0';
 		byte_val = hex_to_ll(byte_field);
 		byte_val = (byte_val >>3) & 0x7;
-		}
 
 //	test for prefixes
 	if(
@@ -2477,7 +2477,7 @@ x86_call_identify(char* field2)
 	call = 0;
 	if(
 		((field2[0] == '4') && ((field2[1] - '0') >= 0) && ((field2[base_char+1] - '0') < 10)) ||
-		((field2[0] == '4') && ((field2[1] - '0') >= 0) && ((field2[base_char+1] - 'a') < 6)) 
+		((field2[0] == '4') && ((field2[1] - 'a') >= 0) && ((field2[base_char+1] - 'a') < 6)) 
 			)base_char=2;
 	byte_field[0] = field2[base_char+2];
 	byte_field[1] = field2[base_char+3];
@@ -2486,9 +2486,11 @@ x86_call_identify(char* field2)
 	byte_val = (byte_val >>3) & 0x7;
 	if(
 		((field2[base_char+0] == 'e') && (field2[base_char+1] == '8')) ||
-		((field2[base_char+0] == '9') && (field2[base_char+1] == 'a')) ||
-		((field2[base_char+0] == 'f') && (field2[base_char+1] == 'f') && ((byte_val >= 2) && (byte_val <= 5 )))
+		((field2[base_char+0] == '9') && (field2[base_char+1] == 'a'))
 			) call = 1;
+	if(
+		((field2[base_char+0] == 'f') && (field2[base_char+1] == 'f') && ((byte_val >= 2) && (byte_val <= 3 )))
+			) call = 2;
 	
 	return call;
 }
@@ -2520,7 +2522,7 @@ func_asm(pointer_data * global_func_list, int index)
 	float summed_samples, total_samples;
 	size_t base, end;
 	int count, branch, branch_count, call, first_bb, last_bb, bb_count, deadbeef, first_src_bb;
-	uint64_t address, old_address, end_address, *branch_address,byte_val, first_asm=0, last_asm;
+	uint64_t address, old_address, end_address, *branch_address,byte_val, first_asm=0, last_asm, last_bb_end;
 	const char * source_file, *source_file_old;
 	int src_file_path_len, ret_val, inline_loop_count;
 	unsigned int line_nr, line_nr_old;
@@ -2565,6 +2567,7 @@ func_asm(pointer_data * global_func_list, int index)
 	previous_asm = NULL;
 	this_bb = NULL;
 	previous_bb = NULL;
+	last_bb_end = 0;
 		
 	this_function = (function_struc_ptr) global_func_list[i].ptr;
 	count = global_func_list[i].val;
@@ -3621,6 +3624,7 @@ func_asm(pointer_data * global_func_list, int index)
 		bb_addr_list[k].base = this_bb->address;
 		bb_addr_list[k].len = this_bb->end_address - this_bb->address;
 		bb_addr_list[k].struc_ptr = (void*)this_bb;
+		last_bb_end = this_bb->end_address;
 		this_function->sample_count[bb_exec_index] += this_bb->sample_count[bb_exec_index];
 #ifdef DBUG
 		fprintf(stderr," this_bb %d, address = 0x%"PRIx64", end_address = 0x%"PRIx64", len = 0x%"PRIx64"",k,this_bb->address, this_bb->end_address,bb_addr_list[k].len);
@@ -3660,14 +3664,15 @@ func_asm(pointer_data * global_func_list, int index)
 		j++;
 		if(this_bb->target1 != 0)
 			{
-			if((this_bb->target1 >= base) && (this_bb->target1 <= end))
+			if((this_bb->target1 >= base) && (this_bb->target1 <= last_bb_end))
 				{
 //		target1 is inside the function
-#ifdef DDBUG
+#ifdef DBUG
 				fprintf(stderr,"calling binsearch for address 0x%"PRIx64"\n",this_bb->target1);
 #endif
 				target_bb = (basic_block_struc_ptr) binsearch(bb_addr_list,bb_count,this_bb->target1);
-#ifdef DDBUG
+#ifdef DBUG
+				fprintf(stderr," returned from binsearch, target_bb = 0x%p\n", target_bb);
 				fprintf(stderr,"\t\"Basic Block %d\"->\"Basic Block %d\";\n",j,target_bb->block_count);
 #endif
 				fprintf(dot,"\t\"Basic Block %d\"->\"Basic Block %d\";\n",j,target_bb->block_count);
@@ -3675,7 +3680,7 @@ func_asm(pointer_data * global_func_list, int index)
 			else
 				{
 				deadbeef++;
-#ifdef DDBUG
+#ifdef DBUG
 				fprintf(stderr,"\t\"Basic Block %d\"->\"Addr %d\";\n",j,deadbeef);
 #endif
 				fprintf(dot,"\t\"Basic Block %d\"->\"Addr %d\";\n",j,deadbeef);
@@ -3685,7 +3690,7 @@ func_asm(pointer_data * global_func_list, int index)
 			}
 		if(this_bb->target2 != 0)
 			{
-#ifdef DDBUG
+#ifdef DBUG
 			fprintf(stderr,"\t\"Basic Block %d\"->\"Basic Block %d\";\n",j,this_bb->block_count+1);
 #endif
 			fprintf(dot,"\t\"Basic Block %d\"->\"Basic Block %d\";\n",j,this_bb->block_count+1);
@@ -3720,7 +3725,7 @@ func_asm(pointer_data * global_func_list, int index)
 	fprintf(list,"[,");
 	for(k=0;k<2;k++)fprintf(list,"\"%d:0\",",k);
 	fprintf(list,"\"2:3\",\"2_1:0\",\"2_2:0\",\"2_3:0\",\"3:0\",");
-	for(k=0;k<num_col;k++)fprintf(list,"\"%d%s\",",3+global_event_order->order[k].base_col,global_event_order->order[k].ctrl_string);
+	for(k=0;k<num_col;k++)fprintf(list,"\"%d%s\",",4+global_event_order->order[k].base_col,global_event_order->order[k].ctrl_string);
 	fprintf(list,"],\n");
 	fprintf(list,"[,,,,,,,\"MSR Programmings\",");
 	for(k=0; k < num_col; k++)fprintf(list," 0x%"PRIx64",",global_event_order->order[k].config);

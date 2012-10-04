@@ -2549,7 +2549,7 @@ main(int argc, char **argv)
 
 	desc.fd = open(file_name, O_RDONLY);
 	if (desc.fd == -1)
-		err(1, "cannot open %s", argv[1]);
+		err(1, "argv[1] = %s, cannot open %s", argv[1],file_name);
 
         if (detect_piped_file(&desc))
                 read_pipe_header(&desc);

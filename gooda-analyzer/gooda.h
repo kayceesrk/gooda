@@ -287,7 +287,10 @@ typedef struct asm_struc{
 	asm_struc_ptr		previous;
 	uint64_t		address;
 	uint64_t		target;
+	branch_struc_ptr	return_list;
+	branch_struc_ptr	call_list;
 	branch_struc_ptr	next_taken_list;
+	branch_site_struc_ptr	hottest_call_target;
 	char *			asm_text;
 	char *			encoding;
 	char *			principal_source_file;
