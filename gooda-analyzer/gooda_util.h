@@ -53,7 +53,6 @@ typedef struct perf_file_section {
 	uint64_t size;
 }perf_file_section_data;
 
-#define HEADER_FEAT_BITS                        256
 enum {
         HEADER_RESERVED   = 0,
         HEADER_TRACE_INFO = 1,
@@ -71,8 +70,11 @@ enum {
         HEADER_EVENT_DESC,
         HEADER_CPU_TOPOLOGY,
         HEADER_NUMA_TOPOLOGY,
+	HEADER_BRANCH_STACK,
+	HEADER_PMU_MAPPINGS,
 
         HEADER_LAST_FEATURE,
+	HEADER_FEAT_BITS	= 256,
 } feature_bits_t;
 
 /* pseudo samples injected by perf-inject */
@@ -95,26 +97,9 @@ enum perf_user_event_type { /* above any possible kernel type */
         PERF_RECORD_HEADER_EVENT_DESC           = 78,
         PERF_RECORD_HEADER_CPU_TOPOLOGY         = 79,
         PERF_RECORD_HEADER_NUMA_TOPOLOGY        = 80,
+	PERF_RECORD_HEADER_PMU_MAPPINGS		= 81,
         PERF_RECORD_HEADER_MAX
 };
-
-#define REC2FEAT(a) [PERF_RECORD_HEADER_##a] = HEADER_##a
-
-static const int rec2feat[PERF_RECORD_HEADER_MAX]={
-        REC2FEAT(HOSTNAME),
-        REC2FEAT(OSRELEASE),
-        REC2FEAT(VERSION),
-        REC2FEAT(ARCH),
-        REC2FEAT(NRCPUS),
-        REC2FEAT(CPUDESC),
-        REC2FEAT(CPUID),
-        REC2FEAT(TOTAL_MEM),
-        REC2FEAT(EVENT_DESC),
-        REC2FEAT(CMDLINE),
-        REC2FEAT(CPU_TOPOLOGY),
-        REC2FEAT(NUMA_TOPOLOGY),
-};
-
 
 typedef struct perf_file_header {
 	uint64_t			magic;
@@ -186,6 +171,7 @@ typedef struct {
         struct sdesc feat[HEADER_LAST_FEATURE];
 	uint64_t sample_type; /* XXX: assume all events have the same sample_type (perf report does the same) */
 	int sample_id_all;  /* true if sample_id_all used by at least one (cannot handle when not all events set this) */
+	size_t sz_sample_id_all;
 	int fd;
 } bufdesc_t;
 
@@ -255,6 +241,7 @@ extern char *arch, *cpu_desc;
 extern uint64_t base_kern_address;
 extern uint32_t pid_ker;
 extern int aggregate_func_list;
+extern char *subst_path_prefix[2];
 
 mmap_struc_ptr insert_mmap (mm_struc_ptr this_mm, char* filename, uint64_t this_time);
 void* insert_event_descriptions(int nr_attrs, int nr_ids, perf_file_attr_ptr attrs, event_id_ptr event_ids);

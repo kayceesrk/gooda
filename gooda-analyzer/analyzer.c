@@ -713,14 +713,22 @@ reorder_module(process_struc_ptr this_process)
 	int i,j,k;
 
 	loop_module = this_process->first_module;
+#ifdef DBUG
+	if(loop_module == NULL)
+		fprintf(stderr," process %s has no modules\n",this_process->name);
+#endif
 	while(loop_module != NULL)
 		{
 		if(loop_module->total_sample_count > 0)num_module_with_data++;
+#ifdef DBUG
+		fprintf(stderr," module %s has %d samples\n",
+			loop_module->path,loop_module->total_sample_count);
+#endif
 		loop_module = loop_module->next;
 		}
 	module_list = (pointer_data *)	malloc(num_module_with_data*sizeof(pointer_data));
 #ifdef DBUG
-	fprintf(stderr,"malloc done in reorder_module\n");
+	fprintf(stderr,"malloc done in reorder_module for %s, num_module_with_data = %d\n",this_process->name,num_module_with_data);
 #endif
 	if(module_list == NULL)
 		{
@@ -2544,6 +2552,7 @@ func_asm(pointer_data * global_func_list, int index)
 	next_taken_struc_ptr next_taken_stack, next_taken_stack_loop, previous_stack, this_next_taken;
 	branch_struc_ptr next_taken_loop;
 	uint64_t next_taken_address;
+	int valid_branch_target=0;
 
 	spreadsheet_len = strlen(sheetname);
 	asmd_len = strlen(asmd);
@@ -2652,7 +2661,7 @@ func_asm(pointer_data * global_func_list, int index)
 		line_count++;
 		good_line = 0;
 #ifdef DBUG
-		fprintf(stderr," readelf -s len = %zu, line = %s",buf_len,line_buf);
+		fprintf(stderr," objdump -d len = %zu, line = %s",buf_len,line_buf);
 #endif
 //		test first few characters to find first line of asm
 //		the following only works with "small" addresses
@@ -3225,6 +3234,12 @@ func_asm(pointer_data * global_func_list, int index)
 	j = 0;
 	loop_asm = this_function->first_asm;
 	branch_address[0] = loop_asm->address;
+	if(last_asm < end)
+		{
+		end = last_asm;
+		fprintf(stderr," readelf inconsistent with objdump in function %s, end = 0x%"PRIx64", last_asm = 0x%"PRIx64"\n",
+			this_function->function_name,end,last_asm);
+		}
 	while(j<2*branch_count+1)
 		{
 		loop_asm = loop_asm->next;
@@ -3252,7 +3267,7 @@ func_asm(pointer_data * global_func_list, int index)
 	branch_address[j+1] = end+1;
 #ifdef DBUG
 	fprintf(stderr,"first branch = 0x%"PRIx64"\n",branch_address[0]);
-	fprintf(stderr," last address = 0x%"PRIx64"\n",branch_address[j]);
+	fprintf(stderr," last address = 0x%"PRIx64", j = %d\n",branch_address[j],j);
 	fprintf(stderr," calling quicksort64 with %d addresses\n",(j+1) );
 #endif
 	quickSort64(branch_address, j+2);
@@ -3277,6 +3292,7 @@ func_asm(pointer_data * global_func_list, int index)
 #endif
 	while((branch_address[last_bb] <=  end) && (last_bb < j+1))last_bb++;
 	last_bb --;
+	if(last_bb == 0)last_bb = 1;
 #ifdef DBUG
 	fprintf(stderr,"last bb = %d\n",last_bb);
 #endif
@@ -3394,18 +3410,23 @@ func_asm(pointer_data * global_func_list, int index)
 #endif
 					next_taken_count_sum -= next_taken_stack_loop->count;
 					next_taken_stack = next_taken_stack_loop->next;
+					if(next_taken_stack != NULL)next_taken_stack->previous = NULL;
 					free(next_taken_stack_loop);
-//					fprintf(stderr,"after decrement, next_taken_count_sum = %d at address 0x%"PRIx64"\n",
-//						next_taken_count_sum, loop_asm->address);
+#ifdef DBUG
+					fprintf(stderr,"after decrement, next_taken_count_sum = %lu at address 0x%"PRIx64"\n",
+						next_taken_count_sum, loop_asm->address);
+#endif
 					}
 				}
+//		test if current address is the target of branches and add counts to stack and increment stack
+			valid_branch_target = 0;
 			if(loop_asm->next_taken_list != NULL)
 				{
 				next_taken_loop = loop_asm->next_taken_list;
 				next_taken_stack_loop = next_taken_stack;
 				previous_stack = NULL;
 // 	outer loop is over next source addresses in the linked list for the current asm line, 
-//			which is a branch target for the list to be != NULL
+//			current asm line should be a branch target for the list to be != NULL
 				while(next_taken_loop != NULL)
 					{
 					next_taken_address = next_taken_loop->address;
@@ -3416,24 +3437,32 @@ func_asm(pointer_data * global_func_list, int index)
 //				test for valid next_taken_branch address
 					if(next_taken_address > end)
 						{
-//						fprintf(stderr," function %s has taken branch LBR source outside of function, LBR address = 0x%"PRIx64", current address = 0x%"PRIx64"\n",
-//							this_function->function_name,next_taken_address,loop_asm->address);
+#ifdef DBUG
+						fprintf(stderr," function %s has taken branch LBR source outside of function, LBR address = 0x%"PRIx64", current address = 0x%"PRIx64"\n",
+							this_function->function_name,next_taken_address,loop_asm->address);
+#endif
 						next_taken_loop = next_taken_loop->next;
 						continue;
 						}
 					else if(next_taken_address < loop_asm->address)
 						{
-//						fprintf(stderr," function %s has taken branch LBR source previous to current address, LBR address = 0x%"PRIx64", current address = 0x%"PRIx64"\n",
-//							this_function->function_name,next_taken_address,loop_asm->address);
+#ifdef DBUG
+						fprintf(stderr," function %s has taken branch LBR source previous to current address, LBR address = 0x%"PRIx64", current address = 0x%"PRIx64"\n",
+							this_function->function_name,next_taken_address,loop_asm->address);
+#endif
 						next_taken_loop = next_taken_loop->next;
 						continue;
 						}
 //			valid address for next taken branch instruction, therefore find correct position in next_taken_stack
 					else
 						{
-//	fprintf(stderr," valid lbr address\n");
+						valid_branch_target = 1;
+#ifdef DBUG
+	fprintf(stderr," valid lbr address = 0x%"PRIx64"\n",next_taken_address);
+#endif
 						if(next_taken_stack == NULL)
 							{
+//					create new stack as there no longer is one, initialize next_taken_count_sum
 							next_taken_stack = (next_taken_struc_ptr) calloc(1,sizeof(next_taken_data));
 							if(next_taken_stack == NULL)
 								err(1,"failed to malloc next_taken_data stack in func_asm");
@@ -3447,18 +3476,27 @@ func_asm(pointer_data * global_func_list, int index)
 							}
 						else
 							{
-//	fprintf(stderr," valid lbr address, stack not NULL\n");
+//					add the new address to the active stack but put it into the stack in increasing address order
+#ifdef DBUG
+	fprintf(stderr," valid lbr address, stack not NULL = 0x%"PRIx64"\n",(uint64_t)next_taken_stack);
+#endif
 							next_taken_stack_loop = next_taken_stack;
+							previous_stack = NULL;
 							while(next_taken_stack_loop->address < next_taken_address)
 								{
-//	fprintf(stderr," valid lbr address, stack not NULL, walking stack\n");
+#ifdef DBUG
+	fprintf(stderr," valid lbr address = 0x%"PRIx64", stack address = 0x%"PRIx64", stack not NULL= 0x%"PRIx64", walking stack\n",
+			next_taken_address, next_taken_stack_loop->address,(uint64_t)next_taken_stack_loop);
+#endif
 								previous_stack = next_taken_stack_loop;
 								next_taken_stack_loop = next_taken_stack_loop->next;
 								if(next_taken_stack_loop == NULL)break;
 								}
 							if(next_taken_stack_loop == NULL)
 								{
-//	fprintf(stderr," valid lbr address, stack not NULL, but next_taken_stack_loop is\n");
+#ifdef DBUG
+	fprintf(stderr," valid lbr address, stack not NULL, but next_taken_stack_loop is\n");
+#endif
 								this_next_taken = (next_taken_struc_ptr) calloc(1,sizeof(next_taken_data));
 								if(this_next_taken == NULL)
 									err(1,"failed to malloc next_taken_data in func_asm");
@@ -3473,14 +3511,16 @@ func_asm(pointer_data * global_func_list, int index)
 									}
 #ifdef DBUG
 			fprintf(stderr,"created next_taken_struc to insert new entry at end for address 0x%"PRIx64", count = %lu, sum = %lu\n",
-								next_taken_stack->address,next_taken_stack->count,next_taken_count_sum);
+								next_taken_address,next_taken_stack->count,next_taken_count_sum);
 #endif
 								}
 //				found existing struc in stack, increment the count for the stack element with the current next_taken_address
 							else if(next_taken_stack_loop->address > next_taken_address)
 								{
-//	fprintf(stderr," valid lbr address, stack not NULL, but next_taken_stack_loop address 0x%"PRIx64"> next_taken_address 0x%"PRIx64"\n",
-//			next_taken_stack_loop->address, next_taken_address);
+#ifdef DBUG
+	fprintf(stderr," valid lbr address, stack not NULL, but next_taken_stack_loop address 0x%"PRIx64" > next_taken_address 0x%"PRIx64"\n",
+			next_taken_stack_loop->address, next_taken_address);
+#endif
 								this_next_taken = (next_taken_struc_ptr) calloc(1,sizeof(next_taken_data));
 								if(this_next_taken == NULL)
 									err(1,"failed to malloc next_taken_data in func_asm");
@@ -3490,24 +3530,42 @@ func_asm(pointer_data * global_func_list, int index)
 								next_taken_count_sum += next_taken_loop->count;
 #ifdef DBUG
 				fprintf(stderr,"created next_taken_struc to insert new entry for address 0x%"PRIx64", count = %lu, sum = %lu\n",
-								next_taken_stack->address,next_taken_stack->count,next_taken_count_sum);
+								next_taken_address,next_taken_stack->count,next_taken_count_sum);
 #endif
 								if(previous_stack != NULL)
 									{
+#ifdef DBUG
+				fprintf(stderr," new address, 0x%"PRIx64" should be between 0x%"PRIx64" and 0x%"PRIx64"\n",
+						next_taken_address, previous_stack->address, next_taken_stack_loop->address);
+#endif
 									this_next_taken->previous = previous_stack;
 									previous_stack->next = this_next_taken;
+									next_taken_stack_loop->previous = this_next_taken;
+									}
+								else
+									{
+//							inserting at top of stack
+#ifdef DBUG
+				fprintf(stderr," new address, 0x%"PRIx64" should be before 0x%"PRIx64"\n",
+						next_taken_address, next_taken_stack_loop->address);
+#endif
+									this_next_taken->previous = NULL;
+									next_taken_stack_loop->previous = this_next_taken;
+									next_taken_stack = this_next_taken;
 									}
 								}
 //				found existing struc in stack, increment the count for the stack element with the current next_taken_address
 							else
 								{
-//	fprintf(stderr," valid lbr address, stack not NULL, next_taken_stack_loop address 0x%"PRIx64" = next_taken_address 0x%"PRIx64"\n",
-//			next_taken_stack_loop->address, next_taken_address);
+#ifdef DBUG
+	fprintf(stderr," valid lbr address, stack not NULL, next_taken_stack_loop address 0x%"PRIx64" = next_taken_address 0x%"PRIx64"\n",
+			next_taken_stack_loop->address, next_taken_address);
+#endif
 								next_taken_stack_loop->count += next_taken_loop->count;
 								next_taken_count_sum += next_taken_loop->count;
 #ifdef DBUG
 				fprintf(stderr,"found next_taken_struc entry for address 0x%"PRIx64", count = %lu, sum = %lu\n",
-								next_taken_stack->address,next_taken_stack->count,next_taken_count_sum);
+								next_taken_stack_loop->address,next_taken_stack_loop->count,next_taken_count_sum);
 #endif
 								}
 							}
@@ -3516,14 +3574,29 @@ func_asm(pointer_data * global_func_list, int index)
 					}
 				}				
 //			test for active stack and update BB struc, asm struc, func_struc, module_struc and principal_process_struc 
-			if((next_taken_stack != NULL) && (loop_asm->asm_text != NULL))
+			if((next_taken_stack != NULL) && (loop_asm->asm_text != NULL) && (bb_exec_index != 0))
 				{
-//				fprintf(stderr,"before sum, next_taken_count_sum = %d at address 0x%"PRIx64"\n",
-//					next_taken_count_sum, loop_asm->address);
+#ifdef DBUG
+				fprintf(stderr,"before sum, next_taken_count_sum = %lu at address 0x%"PRIx64"\n",
+					next_taken_count_sum, loop_asm->address);
+#endif
 				this_bb->sample_count[bb_exec_index] = next_taken_count_sum;
 				this_bb->sample_count[sw_inst_retired_index] += next_taken_count_sum;
 				loop_asm->sample_count[sw_inst_retired_index] = next_taken_count_sum;
 				this_function->sample_count[sw_inst_retired_index] += next_taken_count_sum;
+#ifdef DBUG
+				if(valid_branch_target == 1)
+					{
+					fprintf(stderr," valid branch target finished total count = %lu stack follows\n",next_taken_count_sum);
+					next_taken_stack_loop = next_taken_stack;
+					while(next_taken_stack_loop != NULL)
+						{
+						fprintf(stderr," address = 0x%"PRIx64", count = %lu\n",
+							next_taken_stack_loop->address,next_taken_stack_loop->count);
+						next_taken_stack_loop = next_taken_stack_loop->next;
+						}
+					}
+#endif
 				}
 			old_loop_asm = loop_asm;
 			loop_asm = loop_asm->next;
@@ -3607,7 +3680,7 @@ func_asm(pointer_data * global_func_list, int index)
 //	create the bb list array
 
 	this_bb = this_function->first_bb;
-	bb_addr_list = (addr_list_data*)malloc(bb_count*sizeof(addr_list_data));
+	bb_addr_list = (addr_list_data*)malloc((bb_count + 1)*sizeof(addr_list_data));
 	if(bb_addr_list == NULL)
 		{
 		fprintf(stderr," failed to create bb addr list array for function %s\n",this_function->function_name);
@@ -3625,7 +3698,8 @@ func_asm(pointer_data * global_func_list, int index)
 		bb_addr_list[k].len = this_bb->end_address - this_bb->address;
 		bb_addr_list[k].struc_ptr = (void*)this_bb;
 		last_bb_end = this_bb->end_address;
-		this_function->sample_count[bb_exec_index] += this_bb->sample_count[bb_exec_index];
+		if(bb_exec_index != 0)
+			this_function->sample_count[bb_exec_index] += this_bb->sample_count[bb_exec_index];
 #ifdef DBUG
 		fprintf(stderr," this_bb %d, address = 0x%"PRIx64", end_address = 0x%"PRIx64", len = 0x%"PRIx64"",k,this_bb->address, this_bb->end_address,bb_addr_list[k].len);
 		if(bb_exec_index != 0)
@@ -3643,12 +3717,19 @@ func_asm(pointer_data * global_func_list, int index)
 #endif
 		k++;
 		}
-	this_module->sample_count[bb_exec_index] += this_function->sample_count[bb_exec_index];
-	this_module->sample_count[sw_inst_retired_index] += this_function->sample_count[sw_inst_retired_index];
-	this_process->sample_count[bb_exec_index] += this_function->sample_count[bb_exec_index];
-	this_process->sample_count[sw_inst_retired_index] += this_function->sample_count[sw_inst_retired_index];
-	global_sample_count[bb_exec_index] += this_function->sample_count[bb_exec_index];
-	global_sample_count[sw_inst_retired_index] += this_function->sample_count[sw_inst_retired_index];
+#ifdef DBUG
+	fprintf(stderr,"finished loop over BB's, bb_exec_index = %d, sw_inst_retired_index = %d\n",
+		bb_exec_index,sw_inst_retired_index);
+#endif
+	if(bb_exec_index != 0)
+		{
+		this_module->sample_count[bb_exec_index] += this_function->sample_count[bb_exec_index];
+		this_module->sample_count[sw_inst_retired_index] += this_function->sample_count[sw_inst_retired_index];
+		this_process->sample_count[bb_exec_index] += this_function->sample_count[bb_exec_index];
+		this_process->sample_count[sw_inst_retired_index] += this_function->sample_count[sw_inst_retired_index];
+		global_sample_count[bb_exec_index] += this_function->sample_count[bb_exec_index];
+		global_sample_count[sw_inst_retired_index] += this_function->sample_count[sw_inst_retired_index];
+		}
 
 //	do the binary search on the targets to connect the BB's by number
 //		then printout the contents to the dot file
@@ -3975,6 +4056,24 @@ func_src(pointer_data * global_func_list, int index)
 #ifdef DBUG
 		fprintf(stderr," local_path after not having found the file in sources= %s\n",local_path);
 #endif
+		if (subst_path_prefix[0] && subst_path_prefix[1])
+			{
+				char *p = strstr(local_path, subst_path_prefix[0]);
+				if (p == local_path)
+					{
+					char *new_path;
+					new_path = malloc(1 + strlen(local_path) - strlen(subst_path_prefix[0]) + strlen(subst_path_prefix[1]));
+					if (!new_path)
+						err(1, "not enough memory for local_path prefix swap");
+					sprintf(new_path, "%s%s", subst_path_prefix[1], local_path + strlen(subst_path_prefix[0]));
+#ifdef DBUG
+					fprintf(stderr, "new_path=%s\n", new_path);
+#endif
+					free(local_path);
+					local_path = new_path;
+					}
+			
+			}
 		access_status = access(local_path, R_OK);
 		if(access_status !=0)
 			{

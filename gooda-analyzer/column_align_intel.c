@@ -60,6 +60,7 @@ int *fixed_index;
 int	intel_lbr_entries=16;
 int	inst_ret_index=-1, inst_ret_prec_dist_index=-1,br_taken_index=-1;
 double	sw_inst_ret_correction = 1.0;
+int 	branch_eval_debug=0;
 
 int
 read_char_row(uint64_t offset, int num_fixed)
@@ -244,6 +245,8 @@ init_order_intel(int arch_val)
 	for(i=0;i<line_size;i++)
 		if(lineptr[i] == ':')this_event_order->num_fixed++;
 	num_fixed = this_event_order->num_fixed;
+	fprintf(stderr," template file = %s, with num_fixed = %d\n",file,num_fixed);
+
 //	if(lineptr)free(lineptr);
 
 	fixed_order_data = (order_data*)malloc(num_fixed*sizeof(order_data));
@@ -828,6 +831,16 @@ branch_eval_intel(int* sample_count)
         fprintf(stderr,"global_sample_count totals  ");
         num_col = num_events+global_event_order->num_branch + global_event_order->num_sub_branch;
         for(i=0; i< num_col; i++)fprintf(stderr," %d,",global_sample_count[num_events*(num_cores+num_sockets) + i]);
+	if(branch_eval_debug == 0)
+		{
+		fprintf(stderr," order_array\n");
+		for(i=0; i<num_fixed; i++)
+			{
+			fprintf(stderr," i = %d, index = %d, name = %s, period = %ld, multiplex = %5.4lf\n",
+				i,order[i].index, order[i].name, order[i].Period, order[i].multiplex);
+			}
+		branch_eval_debug = 1;
+		}
 #endif
 	j = 0;
 	k = 0;

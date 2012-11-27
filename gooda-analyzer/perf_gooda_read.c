@@ -85,6 +85,8 @@ char *gooda_dir = GOODA_DIR;
 int sample_struc_count=0, asm_struc_count=0, basic_block_struc_count=0;
 uint64_t total_struc_size;
 
+char *subst_path_prefix[2]; /* 0 = old path, 1 = new path */
+
 int num_lbr;
 typedef struct lbr_record_struc{
 	uint64_t	source;
@@ -105,9 +107,27 @@ read_struc_ptr read_ll=NULL;
 sample_struc_ptr sampl_ll=NULL;
 buildid_struc_ptr build_ll=NULL;
 
+#define REC2FEAT(a) [PERF_RECORD_HEADER_##a] = HEADER_##a
+
+static const int rec2feat[PERF_RECORD_HEADER_MAX]={
+        REC2FEAT(HOSTNAME),
+        REC2FEAT(OSRELEASE),
+        REC2FEAT(VERSION),
+        REC2FEAT(ARCH),
+        REC2FEAT(NRCPUS),
+        REC2FEAT(CPUDESC),
+        REC2FEAT(CPUID),
+        REC2FEAT(TOTAL_MEM),
+        REC2FEAT(EVENT_DESC),
+        REC2FEAT(CMDLINE),
+        REC2FEAT(CPU_TOPOLOGY),
+        REC2FEAT(NUMA_TOPOLOGY),
+	REC2FEAT(PMU_MAPPINGS),
+};
+
 void* reorder_process();
 
-typedef void (*record_ops_t)(bufdesc_t *desc, struct perf_event_header *ehdr);
+typedef void (*record_ops_t)(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_event_attr *attr);
 
 static const char *__perf_magic = "PERFFILE";
 static const uint64_t __perf_magic2    = 0x32454c4946524550ULL;
@@ -204,7 +224,7 @@ skip_buffer(bufdesc_t *desc, size_t sz)
  * actual content depends on sample_type
  */
 static void
-display_id(bufdesc_t *desc, struct perf_event_header *ehdr)
+display_id(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_event_attr *attr, uint64_t *time)
 {
 	struct { uint32_t pid, tid; } pid;
 	uint64_t type = desc->sample_type;
@@ -225,6 +245,8 @@ display_id(bufdesc_t *desc, struct perf_event_header *ehdr)
 		if (ret)
 			errx(1, "cannot read time");
 
+		if (time)
+			*time = val64;
 #ifdef DBUG
 		fprintf(stderr," TIME:%'"PRIu64, val64);
 #endif
@@ -259,13 +281,10 @@ display_id(bufdesc_t *desc, struct perf_event_header *ehdr)
 		fprintf(stderr," CPU:%u", cpu.cpu);
 #endif
 	}
-#ifdef DBUG
-	fputc('\n',stderr);
-#endif
 }
 
 static void
-display_lost(bufdesc_t *desc, struct perf_event_header *ehdr)
+display_lost(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_event_attr *attr)
 {
 	struct { uint64_t id, lost; } lost;
 	int ret;
@@ -279,15 +298,14 @@ display_lost(bufdesc_t *desc, struct perf_event_header *ehdr)
 	fprintf(stderr,"LOST: SAMPLES:%"PRIu64" EVENT:%"PRIu64, lost.lost, lost.id);
 #endif
 	if (desc->sample_id_all)
-		display_id(desc, ehdr);
+		display_id(desc, ehdr, attr, NULL);
 #ifdef DBUG
-	else
-		fputc('\n',stderr);
+	fputc('\n',stderr);
 #endif
 }
 
 static void
-display_exit(bufdesc_t *desc, struct perf_event_header *ehdr)
+display_exit(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_event_attr *attr)
 {
 	struct {
 		uint32_t pid, ppid;
@@ -304,15 +322,14 @@ display_exit(bufdesc_t *desc, struct perf_event_header *ehdr)
 	fprintf(stderr,"EXIT: PID:%d TID:%d TIME:%"PRIu64, grp.pid, grp.tid, grp.time);
 #endif
 	if (desc->sample_id_all)
-		display_id(desc, ehdr);
+		display_id(desc, ehdr, attr, NULL);
 #ifdef DBUG
-	else
-		fputc('\n',stderr);
+	fputc('\n',stderr);
 #endif
 }
 
 static void
-display_throttle(bufdesc_t *desc, struct perf_event_header *ehdr)
+display_throttle(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_event_attr *attr)
 {
 	struct { uint64_t time, id, stream_id; } thr;
 	int i, ret;
@@ -340,15 +357,14 @@ display_throttle(bufdesc_t *desc, struct perf_event_header *ehdr)
 #endif
 
 	if (desc->sample_id_all)
-		display_id(desc, ehdr);
+		display_id(desc, ehdr, attr, NULL);
 #ifdef DBUG
-	else
-		fputc('\n',stderr);
+	fputc('\n',stderr);
 #endif
 }
 
 static void
-display_unthrottle(bufdesc_t *desc, struct perf_event_header *ehdr)
+display_unthrottle(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_event_attr *attr)
 {
 	struct { uint64_t time, id, stream_id; } thr;
 	int i, ret;
@@ -376,25 +392,19 @@ display_unthrottle(bufdesc_t *desc, struct perf_event_header *ehdr)
 #endif
 
 	if (desc->sample_id_all)
-		display_id(desc, ehdr);
+		display_id(desc, ehdr, attr, NULL);
 #ifdef DBUG
-	else
-		fputc('\n',stderr);
+	fputc('\n',stderr);
 #endif
 }
 
 static size_t
 sample_all_id_size(bufdesc_t *desc)
 {
-	struct { uint32_t pid, tid; } pid;
+	uint64_t type = desc->sample_type;
 	size_t sz = 0;
-	int type = desc->sample_type;
-
-	if (!desc->sample_id_all)
-		return 0;
-
 	if (type & PERF_SAMPLE_TID)
-		sz += sizeof(pid);
+		sz += sizeof(uint64_t);
 
 	if (type & PERF_SAMPLE_TIME)
 		sz += sizeof(uint64_t);
@@ -405,22 +415,22 @@ sample_all_id_size(bufdesc_t *desc)
 	if (type & PERF_SAMPLE_STREAM_ID)
 		sz += sizeof(uint64_t);
 
-	if (type & PERF_SAMPLE_CPU) {
-		struct { uint32_t cpu, reserved; } cpu;
-		sz += sizeof(cpu);
-	}
+	if (type & PERF_SAMPLE_CPU)
+		sz += sizeof(uint64_t);
+
 	return sz;
 }
 
 static void
-display_comm(bufdesc_t *desc, struct perf_event_header *ehdr)
+display_comm(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_event_attr *attr)
 {
 	struct {
 		uint32_t pid, tid;
 		char comm[0];
 	} comm;
 	char *str = NULL;
-	size_t sz, sample_all_sz;
+	uint64_t t;
+	size_t sz;
 	int ret;
         comm_struc_ptr local_comm;
         process_struc_ptr this_process;
@@ -429,9 +439,7 @@ display_comm(bufdesc_t *desc, struct perf_event_header *ehdr)
 	if (ret)
 		errx(1, "cannot read comm data");
 
-	sample_all_sz = sample_all_id_size(desc);
-
-	sz = ehdr->size - sizeof(comm) - sizeof(*ehdr) - sample_all_sz;
+	sz = ehdr->size - sizeof(comm) - sizeof(*ehdr) - desc->sz_sample_id_all;
 	str = malloc(sz);
 	if (!str)
 		err(1, "cannot allocate memory for comm len=%zu", sz);
@@ -447,6 +455,9 @@ display_comm(bufdesc_t *desc, struct perf_event_header *ehdr)
 		str);
 #endif
 
+	if (desc->sample_id_all)
+		display_id(desc, ehdr, attr, &t);
+
 #ifdef ANALYZE
         local_comm = comm_struc_create();
         if(local_comm == NULL)
@@ -458,7 +469,12 @@ display_comm(bufdesc_t *desc, struct perf_event_header *ehdr)
         local_comm->pid = comm.pid;
         local_comm->tid = comm.tid;
         local_comm->name = str;
-        local_comm->time = this_time;
+	if (t) {
+        	local_comm->time = t;
+		this_time = t;
+	} else {
+        	local_comm->time = this_time;
+	}
 
         this_process = insert_comm(local_comm);
 #endif
@@ -467,56 +483,39 @@ display_comm(bufdesc_t *desc, struct perf_event_header *ehdr)
 	free(str);
 #endif
 
-	if (desc->sample_id_all)
-		display_id(desc, ehdr);
 #ifdef DBUG
-	else
-		fputc('\n',stderr);
+	fputc('\n',stderr);
 #endif
 }
 
 static void
-display_fork(bufdesc_t *desc, struct perf_event_header *ehdr)
+display_fork(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_event_attr *attr)
 {
 	struct {
 		uint32_t pid, ppid;
 		uint32_t tid, ptid;
-		uint64_t time; // optional, only if PERF_SAMPLE_TIME
+		uint64_t time;
 	} f;
-	size_t sz = sizeof(f);
 	int ret;
 	fork_struc_ptr f_str;
 
-	if (!desc->sample_id_all) {
-		/*
-		 * try to guess if PERF_SAMPLE_TIME was used
-		 * if sz < sizeof(f), then no time field
-		 */
-		sz = ehdr->size - sizeof(*ehdr);
-		if (sz > sizeof(f))
-			errx(1, "wrong sample size for fork");
-	} else
-		sz -= sizeof(uint64_t);
-
-	ret = read_buffer(desc, &f, sz);
+	ret = read_buffer(desc, &f, sizeof(f));
 	if (ret)
 		errx(1, "cannot read fork data");
 
 #ifdef DBUG
-	fprintf(stderr,"FORK: PID:%d TID:%d PPID:%d PTID:%d",
+	fprintf(stderr,"FORK: PID:%d TID:%d PPID:%d PTID:%d TIME:%"PRIu64,
 		f.pid,
 		f.tid,
 		f.ppid,
-		f.ptid);
+		f.ptid,
+		f.time);
 #endif
 
 	if (desc->sample_id_all)
-		display_id(desc, ehdr);
+		display_id(desc, ehdr, attr, NULL);
 #ifdef DBUG
-	else if (sz == sizeof(f))
-		fprintf(stderr," TIME:%"PRIu64"\n", f.time);
-	else
-		fputc('\n',stderr);
+	fputc('\n',stderr);
 #endif
 
 #ifdef ANALYZE
@@ -530,7 +529,7 @@ display_fork(bufdesc_t *desc, struct perf_event_header *ehdr)
 	f_str->ppid = f.ppid;
 	f_str->tid = f.tid;
 	f_str->ptid = f.ptid;
-	if (sz == sizeof(f)) f_str->time = f.time;
+	f_str->time = f.time;
 
         insert_fork(f_str);
 #endif
@@ -539,7 +538,7 @@ display_fork(bufdesc_t *desc, struct perf_event_header *ehdr)
 }
 
 static void
-display_read(bufdesc_t *desc, struct perf_event_header *ehdr)
+display_read(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_event_attr *attr)
 {
 	skip_buffer(desc, ehdr->size - sizeof(*ehdr));
 }
@@ -630,7 +629,7 @@ perf_display_branch_stack(bufdesc_t *desc)
 }
 
 static void
-display_sample(bufdesc_t *desc, struct perf_event_header *ehdr)
+display_sample(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_event_attr *attr)
 {
 	struct { uint32_t pid, tid; } pid;
 	uint64_t type = desc->sample_type;
@@ -784,10 +783,8 @@ display_sample(bufdesc_t *desc, struct perf_event_header *ehdr)
 		if(id < min_event_id)errx(1, "BAD EVENT ID = %ld, min_event_id = %ld\n",event_id,min_event_id);
                 i =  id_array[(int) (id - min_event_id)];
 		if(i > num_events)errx(1, "BAD EVENT ID orig = %ld, event_id = %ld\n",orig_event_id,event_id);
-		if (i == nr_ids)
-			errx(1, "cannot find id %"PRIu64" to parse PERF_SAMPLE_READ", id);
 
-		fmt = attrs[event_ids[i].attr_id].attr.read_format;
+		fmt = global_attrs[i].attr.read_format;
 
 		if (fmt & PERF_FORMAT_GROUP) {
 			ret = read_buffer(desc, &nr, sizeof(nr));
@@ -1066,40 +1063,41 @@ display_sample(bufdesc_t *desc, struct perf_event_header *ehdr)
 #endif
 		total_lbr_entries += num_lbr;
 
-		for(i=0;i<num_lbr-1; i++)
+		for(i=num_lbr-1; i > 0; i--)
 			{
 //	process the target = ip(target)
 			local_mmap = bind_sample(pid.pid,lbr_data[i].destination,this_time);
 			if(local_mmap == NULL)
 				{
 #ifdef DBUGA
-				fprintf(stderr," bind sample failed for destination %d at 0x%"PRIx64"\n",i+1,lbr_data[i].destination);
+				fprintf(stderr," bind sample failed for destination %d at 0x%"PRIx64"\n",i,lbr_data[i].destination);
 #endif
 				continue;
 				}
 			if(local_mmap->principal_process == NULL)principal_process = find_principal_process(local_mmap);
 			if(local_mmap->this_module == NULL)this_module = bind_mmap(local_mmap);
 //	process the next taken branch (lbr_data[i+1].source)
-			target_mmap = bind_sample(pid.pid,lbr_data[i+1].source,this_time);
+			target_mmap = bind_sample(pid.pid,lbr_data[i-1].source,this_time);
 		
 			if(target_mmap == NULL)
 				{
 #ifdef DBUGA
-				fprintf(stderr," bind sample failed for destination %d at 0x%"PRIx64"\n",i+1,lbr_data[i+1].source);
+				fprintf(stderr," bind sample failed for destination %d at 0x%"PRIx64"\n",i-1,lbr_data[i-1].source);
 #endif
 				continue;
 				}
 			if(target_mmap->principal_process == NULL)principal_process = find_principal_process(target_mmap);
 			if(target_mmap->this_module == NULL)this_module = bind_mmap(target_mmap);
-			ret = increment_next_taken_site(local_mmap, lbr_data[i].destination, lbr_data[i+1].source, target_mmap);
+			ret = increment_next_taken_site(local_mmap, lbr_data[i].destination, lbr_data[i-1].source, target_mmap);
 			}
 		}
 #endif
 	free(lbr_data);
+	lbr_data = NULL;
 }
 
 static void
-display_mmap(bufdesc_t *desc, struct perf_event_header *ehdr)
+display_mmap(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_event_attr *attr)
 {
 /*
 	struct {
@@ -1112,6 +1110,7 @@ display_mmap(bufdesc_t *desc, struct perf_event_header *ehdr)
 	mm_data mm;
 	char *filename = NULL;
 	size_t sz;
+	uint64_t t;
 	int ret;
 
         mm_struc_ptr local_mm;
@@ -1125,7 +1124,7 @@ display_mmap(bufdesc_t *desc, struct perf_event_header *ehdr)
 	if (ret)
 		errx(1, "cannot read mmap data");
 
-	sz = ehdr->size - sizeof(mm) - sizeof(*ehdr);
+	sz = ehdr->size - sizeof(mm) - sizeof(*ehdr) - desc->sz_sample_id_all;
 	filename = malloc(sz);
 	if (!filename)
 		err(1, "cannot allocate memory for mmap filename len=%zu", sz);
@@ -1142,6 +1141,12 @@ display_mmap(bufdesc_t *desc, struct perf_event_header *ehdr)
 		mm.len,
 		mm.pgoff,
 		filename);
+
+#endif
+	if (desc->sample_id_all)
+		display_id(desc, ehdr, attr, &t);
+#ifdef DBUG
+	fputc(',',stderr);
 #endif
 
 #ifdef ANALYZE
@@ -1189,9 +1194,13 @@ display_mmap(bufdesc_t *desc, struct perf_event_header *ehdr)
 static void
 read_attrs(bufdesc_t *desc, struct perf_file_header *hdr)
 {
+	struct {
+		uint64_t id;
+		int attr_id;
+	} *event_ids;
 	struct perf_file_attr f_attr;
 	uint64_t id;
-	int nr, i, j,ret;
+	int nr, i, j,ret, nids = 0;
 
         if (hdr->attr_size == 0)
                 err(1, "hdr->attr_size=0 error\n");
@@ -1214,7 +1223,7 @@ read_attrs(bufdesc_t *desc, struct perf_file_header *hdr)
 		if (ret)
 			errx(1, "cannot read file_attr");
 
-		nr_ids += attrs[i].ids.size / sizeof(id);
+		nids += attrs[i].ids.size / sizeof(id);
 #ifdef DBUGA
                 fprintf(stderr," first loop attrs = %d, ids_size = %ld \n",i,attrs[i].ids.size);
                 fprintf(stderr," attrs contents type = %d. size = %d, config = 0x%"PRIx64", period = %"PRIu64", sample_type = %"PRIu64", read_format = %"PRIu64"\n",attrs[i].attr.type,attrs[i].attr.size,attrs[i].attr.config,attrs[i].attr.sample.sample_period,attrs[i].attr.sample_type,attrs[i].attr.read_format);
@@ -1234,10 +1243,10 @@ read_attrs(bufdesc_t *desc, struct perf_file_header *hdr)
 		if (!desc->sample_type)
 			desc->sample_type = attrs[i].attr.sample_type;
 		else if (desc->sample_type != attrs[i].attr.sample_type)
-			errx(1, "profile contains event with different sample_type, cannot handle that...");
+			warnx("profile contains event with different sample_type");
 	}
 
-	event_ids = malloc(nr_ids * sizeof(*event_ids));
+	event_ids = malloc(nids * sizeof(*event_ids));
 	if (!event_ids)
 		err(1, "cannot allocate memory for event_ids");
 
@@ -1251,9 +1260,9 @@ read_attrs(bufdesc_t *desc, struct perf_file_header *hdr)
 		}
 	}
 #ifdef DBUG
-	fprintf(stderr,"nr_attrs=%d nr_ids=%d\n", nr_attrs, nr_ids);
+	fprintf(stderr,"nr_attrs=%d nids=%d\n", nr_attrs, nids);
 #endif
-	for (i=0; i < nr_ids; i++) {
+	for (i=0; i < nids; i++) {
 
 #ifdef DBUG
 		fprintf(stderr,"ID:%"PRIu64" cfg=0x%"PRIx64" sample_type=0x%"PRIx64" sample_id_all=%d\n",
@@ -1266,6 +1275,7 @@ read_attrs(bufdesc_t *desc, struct perf_file_header *hdr)
 		if (attrs[event_ids[i].attr_id].attr.sample_id_all)
 			desc->sample_id_all = 1;
 	}
+	desc->sz_sample_id_all = sample_all_id_size(desc);
 
 #ifdef ANALYZE
 //comment out all this and use the event description records with the names
@@ -1288,9 +1298,13 @@ read_attrs(bufdesc_t *desc, struct perf_file_header *hdr)
 static void
 read_attr_from_pipe(bufdesc_t *desc, struct perf_event_header *ehdr)
 {
+	struct {
+		uint64_t id;
+		int attr_id;
+	} *event_ids = NULL;
         struct perf_event_attr *attr;
         void *addr;
-        int i, n;
+        int i, n, nr = 0;
         size_t sz, total_sz;
 
         nr_attrs++;
@@ -1368,35 +1382,35 @@ read_ids:
         if (!desc->sample_type)
                 desc->sample_type = attr->sample_type;
         else if (desc->sample_type != attr->sample_type)
-                errx(1, "profile contains event with different sample_type, cannot handle that...");
+                warnx("profile contains event with different sample_type");
+
+        if (nr_attrs > 1 && desc->sample_id_all != attr->sample_id_all)
+                errx(1, "profile contains event with different sample_id_all fields, cannot handle that...");
+
+        desc->sample_id_all = attr->sample_id_all;
+	desc->sz_sample_id_all = sample_all_id_size(desc);
 
 #ifdef DBUG
         fprintf(stderr,"SAMPLE_TYPE=0x%"PRIx64"\n", attr->sample_type);
+	printf("SAMPLE_ID_ALL=%d\n", desc->sample_id_all);
 #endif
 
         if (nr_attrs > 1 && desc->sample_id_all != attr->sample_id_all)
                 errx(1, "profile contains event with different sample_id_all fields, cannot handle that...");
 
-        desc->sample_id_all = attr->sample_id_all;
-
-        if (nr_attrs > 1 && desc->sample_id_all != attr->sample_id_all)
-                errx(1, "profile contains event with different sample_id_all fields, cannot handle that...");
-
-        desc->sample_id_all = attr->sample_id_all;
-
         n = total_sz / sizeof(uint64_t);
 
-        event_ids = realloc(event_ids, (nr_ids+n) * sizeof(*event_ids));
+        event_ids = realloc(event_ids, (nr+n) * sizeof(*event_ids));
         if (!event_ids)
                 err(1, "cannot allocate memory for event_ids");
 
-        for (i = 0 ; i < n; i++, nr_ids++) {
+        for (i = 0 ; i < n; i++, nr++) {
                 uint64_t id;
 
                 raw_read_buffer(desc, &id, sizeof(id));
 
-                event_ids[nr_ids].id = id;
-                event_ids[nr_ids].attr_id = nr_attrs - 1;
+                event_ids[nr].id = id;
+                event_ids[nr].attr_id = nr_attrs - 1;
 
 #ifdef DBUG
                 fprintf(stderr,"ID:%"PRIu64" cfg=0x%"PRIx64" sample_type=0x%"PRIx64" sample_id_all=%d\n",
@@ -1406,16 +1420,17 @@ read_ids:
                         attrs[nr_attrs - 1].attr.sample_id_all);
 #endif
         }
+	free(event_ids);
 }
 
 static void
-display_header_attr(bufdesc_t *desc, struct perf_event_header *ehdr)
+display_header_attr(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_event_attr *attr)
 {
         read_attr_from_pipe(desc, ehdr);
 }
 
 static void
-display_event_type(bufdesc_t *desc, struct perf_event_header *ehdr)
+display_event_type(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_event_attr *attr)
 {
         struct perf_trace_event_type ev;
         int ret, sz;
@@ -1446,7 +1461,7 @@ display_event_type(bufdesc_t *desc, struct perf_event_header *ehdr)
 #endif
 }
 static void
-display_tracing(bufdesc_t *desc, struct perf_event_header *ehdr)
+display_tracing(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_event_attr *attr)
 {
         struct tracing_data_event d;
 
@@ -1489,7 +1504,7 @@ read_one_buildid(bufdesc_t *desc, struct perf_event_header *ehdr)
 }
 
 static void
-display_build_id(bufdesc_t *desc, struct perf_event_header *ehdr)
+display_build_id(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_event_attr *attr)
 {
 #ifdef DBUG
         fprintf(stderr,"BUILDID: ");
@@ -1498,7 +1513,7 @@ display_build_id(bufdesc_t *desc, struct perf_event_header *ehdr)
 }
 
 static void
-display_finished_round(bufdesc_t *desc, struct perf_event_header *ehdr)
+display_finished_round(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_event_attr *attr)
 {
         /* This is just a marker record, no useful body */
 #ifdef DBUG
@@ -1509,7 +1524,7 @@ display_finished_round(bufdesc_t *desc, struct perf_event_header *ehdr)
 }
 
 static void
-display_feature(bufdesc_t *desc, struct perf_event_header *ehdr)
+display_feature(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_event_attr *attr)
 {
         int feat;
 
@@ -1551,7 +1566,7 @@ static record_ops_t record_ops[]={
 	[PERF_RECORD_HEADER_EVENT_DESC]   = display_feature,
 	[PERF_RECORD_HEADER_CPU_TOPOLOGY] = display_feature,
         [PERF_RECORD_HEADER_NUMA_TOPOLOGY]= display_feature,
-
+        [PERF_RECORD_HEADER_PMU_MAPPINGS] = display_feature,
 };
 #define NUM_RECORD_OPS	(sizeof(record_ops))/sizeof(record_ops_t));
 
@@ -1559,9 +1574,14 @@ static void
 parse(bufdesc_t *desc)
 {
 	struct perf_event_header ehdr;
+	struct perf_event_attr *attr = NULL;
+	struct perf_event_attr fake_attr;
 	uint64_t opos;
+	int n_unknown = 0;
 	int ret;
 
+	memset(&fake_attr, 0, sizeof(fake_attr));
+	fake_attr.sample_type = desc->sample_type;
 	for(;;) {
 		opos = desc->cur.pos;
 		ret = read_buffer(desc, &ehdr, sizeof(ehdr));
@@ -1572,18 +1592,27 @@ parse(bufdesc_t *desc)
 
                 if (ehdr.type < PERF_RECORD_MMAP || ehdr.type >= PERF_RECORD_HEADER_MAX) {
                         printf("unknown sample type %d size=%d\n", ehdr.type, ehdr.size);
+			if (++n_unknown > 50)
+				exit(1);
                         skip_buffer(desc, ehdr.size - sizeof(ehdr));
                         continue;
                 }
 
                 if (!record_ops[ehdr.type]) {
-                        printf("unknown sample type %d size=%d\n", ehdr.type, ehdr.size);
+                        printf("unknown sample type %d size=%d ops=NULL\n", ehdr.type, ehdr.size);
+			if (++n_unknown > 50)
+				exit(1);
                         skip_buffer(desc, ehdr.size - sizeof(ehdr));
                         continue;
                 }
 
-                record_ops[ehdr.type](desc, &ehdr);
+                record_ops[ehdr.type](desc, &ehdr, &fake_attr);
 
+		/* actual error, do not add in DBUG */
+		if ((desc->cur.pos - opos) >  ehdr.size)
+			fprintf(stderr, "error: read too much in record\n");
+
+skip:
 		if ((desc->cur.pos - opos) != ehdr.size) {
 #ifdef DBUG
 			fprintf(stderr,"skipping unknown record extension of %"PRIu64" bytes\n", opos + ehdr.size - desc->cur.pos);
@@ -2211,6 +2240,36 @@ read_total_mem(bufdesc_t *desc, struct perf_file_header *hdr)
 #endif
 }
 
+static void
+read_branch_stack(bufdesc_t *desc, struct perf_file_header *hdr)
+{
+#ifdef DBUG
+	fprintf(stderr, "BRANCH_STACK: present\n");
+#endif
+}
+
+static void
+read_pmu_mappings(bufdesc_t *desc, struct perf_file_header *hdr)
+{
+	uint32_t nr, type;
+	char *str;
+
+#ifdef DBUG
+	fprintf(stderr, "PMU_MAPPING: ");
+#endif
+	raw_read_buffer(desc, &nr, sizeof(nr));
+	while (nr--) {
+		raw_read_buffer(desc, &type, sizeof(type));
+		str = raw_read_string(desc);
+#ifdef DBUG
+		fprintf(stderr, "%s = %d ", str, type);
+#endif
+		free(str);
+	}
+#ifdef DBUG
+	fprintf(stderr, "\n");
+#endif
+}
 
 static void (*read_feature[HEADER_LAST_FEATURE])(bufdesc_t *, struct perf_file_header *)={
 	[HEADER_BUILD_ID] = read_buildids,
@@ -2226,6 +2285,8 @@ static void (*read_feature[HEADER_LAST_FEATURE])(bufdesc_t *, struct perf_file_h
 	[HEADER_EVENT_DESC] = read_event_desc,
 	[HEADER_CPU_TOPOLOGY] = read_cpu_topology,
 	[HEADER_NUMA_TOPOLOGY] = read_numa_topology,
+	[HEADER_BRANCH_STACK] = read_branch_stack,
+	[HEADER_PMU_MAPPINGS] = read_pmu_mappings,
 };
 
 static void
@@ -2485,7 +2546,7 @@ check4gooda(bufdesc_t *desc)
 
 static void usage(void)
 {
-	fprintf(stderr,"Usage: perf [-v] [-h] [a] [-i] perf_data_file [-n] Val\n");
+	fprintf(stderr,"Usage: perf [-v] [-h] [a] [-i perf_data_file] [-n] [-p old_prefix,new_prefix] Val\n");
 	fprintf(stderr," by default gooda will try to read perf data from ./perf.data\n");
 	fprintf(stderr,"   use the -i option and the preferred file name to change this\n");
 	fprintf(stderr," by default gooda will attempt to create annoted disassembly and source listings, and CFG displays\n");
@@ -2496,6 +2557,7 @@ static void usage(void)
 	fprintf(stderr," Adding the option -a will result in the aggregated kernel sample process pid = -1 also showing up\n");
 	fprintf(stderr,"   in the function list and source, asm and cfg's\n");
 	fprintf(stderr,"   thus the kernel samples will be effectively double counted\n");
+	fprintf(stderr," Path prefix can be substituted for another using the -p old_prefix,new_prefix option.\n");
 }
 
 /*
@@ -2509,13 +2571,13 @@ main(int argc, char **argv)
         pointer_data * global_func_list;
 	column_flag = 0;
 	char def_file[] = "perf.data";
-	char * file_name;
+	char * file_name, *p;
 	struct rusage r_usage;
 
 	file_name = def_file;
 	asm_cutoff = asm_cutoff_def;	
 
-	while ((c= getopt(argc, argv, "i:n:v:ah")) != -1) {
+	while ((c= getopt(argc, argv, "i:n:v:ahp:")) != -1) {
 		switch(c) {
 		case 'v':
 			fprintf(stderr,"perf_reader v%s\n", PERF_READER_VERSION);
@@ -2523,6 +2585,16 @@ main(int argc, char **argv)
 		case 'h':
 			usage();
 			exit(0);
+		case 'p':
+			p = strchr(optarg, ',');
+			if (!p) {
+				fprintf(stderr, "-p requires old_prefix,new_prefix\n");
+				exit(1);
+			}
+			*p = '\0';
+			subst_path_prefix[0] = optarg;
+			subst_path_prefix[1] = p+1;
+			break;
 		case 'i':
 			len = strlen(optarg);
 			file_name = malloc(len+1);

@@ -119,8 +119,10 @@ enum perf_event_sample_format {
 	PERF_SAMPLE_STREAM_ID		= 1U << 9,
 	PERF_SAMPLE_RAW			= 1U << 10,
 	PERF_SAMPLE_BRANCH_STACK	= 1U << 11,
+	PERF_SAMPLE_REGS_USER		= 1U << 12,
+	PERF_SAMPLE_STACK_USER		= 1U << 13,
 
-	PERF_SAMPLE_MAX			= 1U << 12,	/* non-ABI */
+	PERF_SAMPLE_MAX			= 1U << 14,	/* non-ABI */
 };
 
 /*
@@ -144,6 +146,12 @@ enum perf_branch_sample_type {
        PERF_SAMPLE_BRANCH_IND_CALL     = 1U << 6, /* indirect calls */
 
        PERF_SAMPLE_BRANCH_MAX          = 1U << 7, /* non-ABI */
+};
+
+enum perf_sample_regs_abi {
+	PERF_SAMPLE_REGS_ABI_NONE	= 0,
+	PERF_SAMPLE_REGS_ABI_32		= 1,
+	PERF_SAMPLE_REGS_ABI_64		= 2,
 };
 
 /*
@@ -236,8 +244,12 @@ typedef struct perf_event_attr {
 			precise_ip     :  2, /* skid constraint       */
 			mmap_data      :  1, /* non-exec mmap data    */
 			sample_id_all  :  1, /* sample_type all events */
-
-			__reserved_1   : 45;
+			exclude_host   :  1,
+			exclude_guest  :  1,
+			exclude_callchain_kernel : 1,
+			exclude_callchain_user   : 1,
+			sample_evt_id  :  1,
+			__reserved_1   : 40;
 
 	union {
 		uint32_t	wakeup_events;		/* wakeup every n events */
@@ -257,6 +269,9 @@ typedef struct perf_event_attr {
 	} bp2;
 //	} SWIG_NAME(bp2);
 	uint64_t branch_sample_type;
+	uint64_t sample_regs_user;
+	uint32_t sample_stack_user;
+	uint32_t __reserved_2;
 } perf_event_attr_t;
 
 /*
@@ -285,11 +300,17 @@ struct perf_event_mmap_page {
 	int64_t		offset;			/* add to hardware event value */
 	uint64_t	time_enabled;		/* time event active */
 	uint64_t	time_running;		/* time event on cpu */
-
-		/*
-		 * Hole for extension of the self monitor capabilities
-		 */
-	uint64_t	__reserved[123];	/* align to 1k */
+	union {
+		uint64_t capabilities;
+		uint64_t cap_usr_time  : 1,
+			 cap_usr_rdpmc : 1,
+			 cap_____res   : 62;
+	};
+	uint16_t pmc_width;
+	uint16_t time_shift;
+	uint32_t time_mult;
+	uint64_t time_offset;
+	uint64_t __reserved[120];
 
 	/*
 	 * Control data for the mmap() data buffer.
@@ -311,8 +332,10 @@ struct perf_event_mmap_page {
 #define PERF_EVENT_MISC_KERNEL		(1 << 0)
 #define PERF_EVENT_MISC_USER		(2 << 0)
 #define PERF_EVENT_MISC_HYPERVISOR	(3 << 0)
+#define PERF_RECORD_MISC_GUEST_KERNEL	(4 << 0)
+#define PERF_RECORD_MISC_GUEST_USER	(5 << 0)
 
-#define PERF_RECORD_MISC_EXACT			(1 << 14)
+#define PERF_RECORD_MISC_EXACT		(1 << 14)
 /*
  * Indicates that the content of PERF_SAMPLE_IP points to
  * the actual instruction that triggered the event. See also

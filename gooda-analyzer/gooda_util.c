@@ -657,9 +657,11 @@ bind_mmap(mmap_struc_ptr this_mmap)
 		this_module->starting_ip = find_load_addr(this_module->path);
 		this_module->time = this_mmap->time;
 //	put it on the top of the process' module stack and return
+
 		if(this_process->first_module != NULL) this_process->first_module->previous = this_module;
 		this_module->next = this_process->first_module;
 		this_process->first_module = this_module;
+
 		}
 	this_mmap->this_module = this_module;
 	return this_module;
@@ -822,7 +824,9 @@ insert_mmap(mm_struc_ptr this_mm, char* filename, uint64_t new_time)
 		this_process->first_mmap = pid_mmap_stack;
 		this_struc->previous = NULL;
 		}
-			
+#ifdef DBUG
+	fprintf(stderr,"returning mmap struc for %s starting at 0x%"PRIx64", with time 0x%"PRIx64"\n",this_struc->filename,this_struc->addr,this_struc->time);
+#endif			
 	return this_struc;
 }
 
@@ -885,6 +889,7 @@ bind_sample(uint32_t pid, uint64_t ip, uint64_t new_time)
 		      {
 #ifdef DBUG
 		fprintf(stderr,"this_mmap != NULL, right pid, in addr range, ip = 0x%"PRIx64", name = %s\n",this_mmap->addr, this_mmap->filename);
+		fprintf(stderr," ip in addr range for %s, new time = 0x%"PRIx64", this_mmap->time = 0x%"PRIx64"\n",this_mmap->filename,new_time,this_mmap->time);
 #endif
 		      if(this_mmap->time < new_time)
 			{
@@ -894,7 +899,7 @@ bind_sample(uint32_t pid, uint64_t ip, uint64_t new_time)
 //		BECAUSE: we revert to the old mmap record and push it up in the stack  
 //		and when the new mmap record on this core comes along, it gets pushed to the top
 //	there may still be a problem if the new addr exactly equals the old addr
-             
+/*             
 			if(pid_mmap_stack != this_mmap)
 				{
 				this_mmap->previous->next = this_mmap->next;
@@ -905,6 +910,7 @@ bind_sample(uint32_t pid, uint64_t ip, uint64_t new_time)
 				pid_mmap_stack = this_mmap;
 				this_process->first_mmap = pid_mmap_stack;
 				}
+*/
 #ifdef DBUG
 		fprintf(stderr," from bind  this_mmap->filename = %s\n",this_mmap->filename);
 //		fprintf(stderr,"kernel_mmap filename = %s, kernel_mmap filename address = %lp\n",kernel_mmap->filename,kernel_mmap->filename);
