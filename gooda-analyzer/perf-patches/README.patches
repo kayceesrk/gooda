@@ -5,14 +5,8 @@ There is on subdir per kernel version. In each directory
 patches are numbered in increasing order. When applying
 the patches, you must respect the order:
 
-For Linux v3.3:
-  $ cat linux-v3.3/* | patch -p1
-
-For Linux v3.4:
-  $ cat linux-v3.4/* | patch -p1
-
-For Linux v3.5:
-  $ cat linux-v3.5/* | patch -p1
+For Linux vX.Y:
+  $ cat linux-vX.Y/* | patch -p1
 
 The kernel and/or perf patches are distributed under the
 GPLv2 as used by the kernel source tree. See the COPYING
