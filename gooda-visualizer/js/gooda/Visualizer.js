@@ -42,7 +42,8 @@ require(["dijit/layout/BorderContainer",
          "dijit/layout/ContentPane",
          "dijit/Tree",
          "dijit/tree/ForestStoreModel",
-         "dojox/data/CsvStore",
+         "dijit/form/Button",
+         "dojo/data/ItemFileWriteStore",
          "dojox/widget/Standby",
          "dojo/_base/declare"], function(BorderContainer,
                                          AccordionContainer, 
@@ -50,22 +51,47 @@ require(["dijit/layout/BorderContainer",
                                          ContentPane,
                                          Tree,
                                          ForestStoreModel,
-                                         CsvStore,
+                                         Button,
+                                         ItemFileWriteStore,
                                          Standby,
                                          declare){
   declare("GOoDA.Visualizer", GOoDA.ContainerView, {
     constructor: function(params){
       var self = this;
-      
-      var reportStore = new CsvStore({
+
+      var source = {
+        identifier: 'report', 
+        label: 'report', 
+        items: []
+      };
+
+      this.reportStore = new ItemFileWriteStore({
         identifier: 'report',
-        label: 'report',
-        urlPreventCache: true,
-        url: "reports/index"
+        data: source
       });
+
+      this.fileLoader = new GOoDA.FileLoader();
+      this.fileLoader.readFile("reports/index", function(data){
+        var reports = data.split("\n");
+
+        for(var i in reports){
+          var report = reports[i];
+
+          if(!report || report == "report"){
+            continue;
+          }
+
+          try{
+            self.reportStore.newItem({report: "reports/" + report});
+          }catch(err){
+            //report loaded through GET parameter
+          }
+        }
+      }, function(){
+      })
       
       var reportModel = new ForestStoreModel({
-        store: reportStore
+        store: this.reportStore
       });
             
       this.state = new GOoDA.State({
@@ -78,7 +104,7 @@ require(["dijit/layout/BorderContainer",
       this.header = new ContentPane({
         region: "top",
         id: 'headerContainer',
-        content: "<div id='header'>Generic Optimization Data Analyzer <div class='headerEm'>GUI</div></div>"
+        content: "<div id='header'>Generic Optimization Data Analyzer</div>"
       });
       
       this.container = new StackContainer({
@@ -102,17 +128,32 @@ require(["dijit/layout/BorderContainer",
         id: "navigationMenu"
       });
       
+      //TODO: find a better way to open directories without using a java applet
       this.reportExplorer = new Tree({
         title: "Reports",
+        //title: "Reports <span id='loadButton' title='Open report from local drive' class='toggle expand' style='float: right; margin-top:3px'></span>",
         model: reportModel,
         showRoot: false,
         persist: false,
         
         onClick: function(e){
-          self.loadReport(e._csvId);
-        }
+          self.loadReport(e.report);
+        },
+        /*onLoad: function(){
+          $('#loadButton').click(function(){
+            if(!jsFs || !jsFs.explore){
+              new GOoDA.Notification({
+                title: 'Warning', 
+                content: 'Java applet not enabled!'
+              });
+            }else{
+              var report = jsFs.explore();
+              report && self.loadReport(report);
+            }
+          });
+        }*/
       });
-      
+
       // http://bugs.dojotoolkit.org/ticket/14554
       this.reportExplorer.containerNode = this.reportExplorer.domNode;
       
@@ -138,7 +179,23 @@ require(["dijit/layout/BorderContainer",
     },
     
     loadReport: function(name){
-      var report = GOoDA.Report.create(name);
+      try{
+        this.reportStore.newItem({report: name});
+      }catch(err){
+      }
+
+      GOoDA.Report.create(name);
+    },
+
+    unloadReport: function(name){
+      var self = this;
+
+      try{
+        this.reportStore.fetchItemByIdentity({identity: name, onItem: function(item){
+            self.reportStore.deleteItem(item);
+        }});
+      }catch(e){
+      }
     },
     
     loadFunction: function(reportName, functionID){
