@@ -57,6 +57,7 @@ typedef struct mmap_struc{
 	module_struc_ptr this_module;
 	process_struc_ptr this_process;
 	process_struc_ptr principal_process;
+	char *		buildid;
 	uint32_t	pid;
 	uint32_t	tid;
 	uint64_t	pgoff;

@@ -118,6 +118,20 @@ init_order(void)
 		init_order_intel(arch_val);
 		return;
 		}
+	else if ((family == 6) && (model == 62))
+		{
+//		IVB_EP
+		arch_val = 7;
+		init_order_intel(arch_val);
+		return;
+		}
+	else if ((family == 6) && (model == 60))
+		{
+//		HSW
+		arch_val = 8;
+		init_order_intel(arch_val);
+		return;
+		}
 	else
 		{
 //		default
@@ -153,6 +167,18 @@ branch_eval(int* sample_count)
 		branch_eval_intel();
 		return;
 		}
+	else if ((family == 6) && (model == 62))
+		{
+//		IVB_EP
+		branch_eval_intel();
+		return;
+		}
+	else if ((family == 6) && (model == 60))
+		{
+//		HSW
+		branch_eval_intel();
+		return;
+		}
 	else
 		{
 //		default
@@ -185,8 +211,20 @@ set_order(int* sample_count)
 		}
 	else if ((family == 6) && (model == 58))
 		{
-//		SNB-EP
+//		IVB
 		retval = set_order_intel(sample_count, 6);
+		return retval;
+		}
+	else if ((family == 6) && (model == 62))
+		{
+//		IVB_EP
+		retval = set_order_intel(sample_count, 7);
+		return retval;
+		}
+	else if ((family == 6) && (model == 60))
+		{
+//		HSW
+		retval = set_order_intel(sample_count, 8);
 		return retval;
 		}
 	else

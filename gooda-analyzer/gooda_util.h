@@ -20,6 +20,13 @@ extern int default_hash_length, max_default_entries;
 extern double sqrt_five, max_entry_fraction;
 extern int pop_threshold;
 extern int bad_rva, global_rva, bad_sample_count, total_function_sample_count;
+extern int arch_type_flag, objdump_len, bin_type;
+extern char* objdump_bin;
+extern uint64_t addr_mask;
+
+typedef void* (*branch_func) (char*) ;
+extern branch_func *branch_func_array;
+extern void branch_function_init();
 
 #define PERF_READER_VERSION     "0.4"
 
@@ -33,9 +40,10 @@ extern int bad_rva, global_rva, bad_sample_count, total_function_sample_count;
 
 #define BITS_PER_LONG __WORDSIZE
 #define BITS_PER_BYTE           8
-#define BITS_TO_U64(nr) DIV_ROUND_UP(nr, BITS_PER_BYTE * sizeof(uint64_t))
+#define BITS_TO_U64(nr)  DIV_ROUND_UP(nr, BITS_PER_BYTE * sizeof(uint64_t))
+#define BITS_TO_LONG(nr) DIV_ROUND_UP(nr, BITS_PER_BYTE * sizeof(unsigned long))
 #define DECLARE_BITMAP(name,bits) \
-        uint64_t name[BITS_TO_U64(bits)]
+        unsigned long name[BITS_TO_LONG(bits)]
 
 
 typedef struct mm_struc * mm_struc_ptr;
@@ -173,6 +181,7 @@ typedef struct {
 	int sample_id_all;  /* true if sample_id_all used by at least one (cannot handle when not all events set this) */
 	size_t sz_sample_id_all;
 	int fd;
+	int needs_bswap; /* needs byte swapping for endianess */
 } bufdesc_t;
 
 typedef struct event_id * event_id_ptr;
@@ -233,6 +242,8 @@ extern int asm_cutoff, func_cutoff, source_cutoff, max_bb, max_branch;
 extern int num_branch, num_sub_branch, num_derived;
 extern int source_index, target_index, bb_exec_index, sw_inst_retired_index, next_taken_index;
 extern int source_column, target_column, bb_exec_column, sw_inst_retired_column, next_taken_column;
+extern int rs_empty_duration_index, call_index, mispredict_index, indirect_index;
+extern int rs_empty_duration_index, call_column, mispredict_column, indirect_column;
 extern char **fixed_name_list, **branch_name_list;
 extern int * fixed_event_index;
 extern int column_flag;
@@ -242,6 +253,7 @@ extern uint64_t base_kern_address;
 extern uint32_t pid_ker;
 extern int aggregate_func_list;
 extern char *subst_path_prefix[2];
+extern uint64_t * core_start_time, * core_last_time;
 
 mmap_struc_ptr insert_mmap (mm_struc_ptr this_mm, char* filename, uint64_t this_time);
 void* insert_event_descriptions(int nr_attrs, int nr_ids, perf_file_attr_ptr attrs, event_id_ptr event_ids);

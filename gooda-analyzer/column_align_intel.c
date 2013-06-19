@@ -48,6 +48,8 @@ char input_file_snb_ep[]="snb_ep.csv";
 char input_file_wsm_ep[]="wsm_ep.csv";
 char input_file_wsm[]="wsm.csv";
 char input_file_ivb[]="ivb.csv";
+char input_file_ivb_ep[]="ivb_ep.csv";
+char input_file_hsw[]="hsw.csv";
 int *fixed_index;
 //	ratio column names
 	char rs_empty_duration[]="Avg_RS_empty_duration",wrong_path[]="Wrong_path_cycles";
@@ -226,6 +228,12 @@ init_order_intel(int arch_val)
 			break;
 		case 6:
 			file = input_file_ivb;
+			break;
+		case 7:
+			file = input_file_ivb_ep;
+			break;
+		case 8:
+			file = input_file_hsw;
 			break;
 		default:
 			err(1," init_order_intel called with invalid value fo arch_val");
@@ -612,6 +620,15 @@ set_order_intel(int* sample_count, int arch_val)
 
 	base_index = num_events*(num_cores + num_sockets);
 	this_event_order = global_event_order;
+	default_sample_period = 2000000;
+	default_multiplex = num_events/4 + 1;
+//	initialize fixed list in case user was delusional and thought they knew what they were doing
+	for(i = 0; i< this_event_order->num_fixed; i++)
+		{
+		this_event_order->order[i].Period = default_sample_period;
+		this_event_order->order[i].multiplex = default_multiplex;
+		}
+
 #ifdef DBUGI
 	fprintf(stderr," fixed_index[0] = %d, null_index = %d\n",fixed_index[0],num_events*(num_cores + num_sockets + 1));
 	fprintf(stderr," num_events = %d\n",num_events);
@@ -629,12 +646,6 @@ set_order_intel(int* sample_count, int arch_val)
 		{
 		default_sample_period = global_attrs[fixed_index[0] - num_events*(num_cores + num_sockets)].attr.sample.sample_period;
 		default_multiplex = global_multiplex_correction[fixed_index[0]];
-		}
-	else
-		{
-		default_sample_period = 2000000;
-		default_multiplex = num_events/4 + 1;
-		
 		}
 #ifdef DBUGI
 	fprintf(stderr,"set_order: setting period, multiplex and config\n");

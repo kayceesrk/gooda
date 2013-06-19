@@ -62,6 +62,12 @@ locate_function(bfd *self, asection *section,void *data ATTRIBUTE_UNUSED)
 	found = bfd_find_nearest_line (self, section, syms, ip - vma,
 		&filename, &functionname, &line);
 }
+static int
+ has_debug_line_info(bfd *abfd)
+{
+	return (bfd_get_section_by_name (abfd, ".debug_line") != NULL ||
+		bfd_get_section_by_name(abfd, ".zdebug_line") != NULL);
+}
 
 static int 
 process_symtab(void)
@@ -69,8 +75,14 @@ process_symtab(void)
 	long storage;
 	long symcount;
 	const char *string, *errmsg;
+	int debug_line_info;
 
 	bfd_boolean dynamic = FALSE;
+
+	debug_line_info = has_debug_line_info(active_bfd);
+#ifdef DBUG
+	fprintf(stderr," from process_symtab/asm_2_src_init, debug_line_info = %d\n",debug_line_info);
+#endif
 
 	if ((bfd_get_file_flags (active_bfd) & HAS_SYMS) == 0)
 		{
@@ -82,6 +94,9 @@ process_symtab(void)
 		else
 			fprintf(stderr, "%s\n", errmsg);
 
+#ifdef DBUG
+		fprintf(stderr,"from process_symtab returning -1\n");
+#endif
 		return -1;
 		}
 
@@ -100,6 +115,9 @@ process_symtab(void)
 		else
 			fprintf(stderr, "%s\n", errmsg);
 
+#ifdef DBUG
+		fprintf(stderr,"from process_symtab returning -1\n");
+#endif
 		return -1;
 		}
 
@@ -118,10 +136,14 @@ process_symtab(void)
 		else
 			fprintf(stderr, "%s\n", errmsg);
 
+		fprintf(stderr,"from process_symtab returning -1\n");
 		return -1;
 		}
-
-	return 0;
+#ifdef DBUG
+	fprintf(stderr,"from process_symtab returning value based on debug_line_info\n");
+#endif
+	if(debug_line_info == 1)return 0;
+	return -1;
 }
 
 int 
@@ -220,7 +242,9 @@ asm_2_src_init(const char *file_name)
 			active_bfd = dbg_bfd;
 			}
 		}
-
+#ifdef DBUG
+	fprintf(stderr," from process_symtab filename = %s\n",file_name);
+#endif
 	return process_symtab();
 }
 

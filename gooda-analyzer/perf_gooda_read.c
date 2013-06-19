@@ -28,6 +28,8 @@ limitations under the License.
 #include <err.h>
 #include <sys/time.h>
 #include <sys/resource.h>
+#include <byteswap.h>
+#include <sys/utsname.h>
 #include "perf_event.h"
 #include "gooda.h"
 #include "perf_gooda.h"
@@ -53,11 +55,13 @@ derived_sample_data* derived_events = NULL;
 
 int num_process=0, global_func_count=0, global_sample_count_in_func=0,global_branch_sample_count=0;
 int bad_rva =0, global_rva = 0,bad_sample_count=0,total_function_sample_count = 0;
-int asm_cutoff = 0, func_cutoff = 50, source_cutoff = 50, max_bb = 500, max_branch = 10;
+int asm_cutoff = 0, func_cutoff = 50, source_cutoff = 50, max_bb = 250, max_branch = 10;
 int asm_cutoff_def = 20, asm_cutoff_big = 200, big_func_count = 500;
 int num_branch, num_sub_branch, num_derived;
 int source_index=0, target_index=0, bb_exec_index = 0, sw_inst_retired_index = 0, next_taken_index = 0;
 int source_column = 0, target_column = 0, bb_exec_column = 0, sw_inst_retired_column = 0, next_taken_column = 0;
+int rs_empty_duration_index, call_index, mispredict_index, indirect_index;
+int rs_empty_duration_index, call_column, mispredict_column, indirect_column;
 int *id_array, num_cores, num_sockets=2, *socket, num_events;
 uint64_t min_event_id=0xFFFFFFFFFFFFFFFFUL;
 int default_hash_length=10000, max_default_entries=2000;
@@ -79,11 +83,30 @@ event_attr_ptr global_attrs;
 event_id_ptr global_event_ids;
 event_name_struc_ptr event_list;
 int family, model;
-char *arch, *cpu_desc;
+char *arch, *cpu_desc, *local_arch;
+char local_objdump[]="objdump";
+char objdump_x86[]="objdump";
+char objdump_arm32[]="arm-linux-gnueabi-objdump";
+char objdump_ppc64[]="powerpc64-linux-gnueabi-objdump";
+char arch_arm32[]="armv7l";
+char arch_x86_64[]="x86_64";
+char arch_ppc64[]="ppc64";
+char* objdump_bin = "NO_OBJDUMP_AVAIL";
+int found_objdump=0;
+
+int arch_type_flag, objdump_len, bin_type;
+uint64_t arm_addr_mask=0xFFFFFFFFFFFFFFFEUL;
+uint64_t x86_addr_mask=0xFFFFFFFFFFFFFFFFUL;
+uint64_t ppc64_addr_mask=0xFFFFFFFFFFFFFFFFUL;
+uint64_t addr_mask;
+
+branch_func *branch_func_array;
+
 int min_id_event=-1, max_id_event=-1;
 char *gooda_dir = GOODA_DIR;
 int sample_struc_count=0, asm_struc_count=0, basic_block_struc_count=0;
 uint64_t total_struc_size;
+uint64_t * core_start_time, * core_last_time;
 
 char *subst_path_prefix[2]; /* 0 = old path, 1 = new path */
 
@@ -186,6 +209,66 @@ raw_skip_buffer(bufdesc_t *desc, size_t sz)
 	return 0;
 }
 
+static void
+bswap_ehdr(struct perf_event_header *ehdr)
+{
+	ehdr->type = bswap_32(ehdr->type);
+	ehdr->misc = bswap_16(ehdr->misc);
+	ehdr->size = bswap_16(ehdr->size);
+
+}
+
+static void
+mem_bswap_64(void *p, size_t size)
+{
+	uint64_t *s = p;
+	size_t i;
+
+	for (i = 0; i < size; s++, i += sizeof(uint64_t))
+		*s = bswap_64(*s);
+}
+
+static unsigned char rev_bits_in_byte(unsigned char x)
+{
+        int rev = (x >> 4) | ((x & 0xf) << 4);
+
+        rev = ((rev & 0xcc) >> 2) | ((rev & 0x33) << 2);
+        rev = ((rev & 0xaa) >> 1) | ((rev & 0x55) << 1);
+
+        return (unsigned char) rev;
+}
+
+static void swap_bitfield(void *p, size_t len)
+{
+	uint8_t *q = p;
+	size_t s;
+
+	for (s = 0; s < len; s++, q++)
+		*q = rev_bits_in_byte(*q);
+}
+
+static void
+bswap_event_attr(struct perf_event_attr *attr)
+{
+	attr->type   = bswap_32(attr->type);
+	attr->size   = bswap_32(attr->size);
+	attr->config = bswap_64(attr->config);
+
+	attr->sample.sample_freq = bswap_64(attr->sample.sample_freq);
+	attr->sample_type = bswap_64(attr->sample_type);
+	attr->read_format = bswap_64(attr->read_format);
+
+	swap_bitfield((unsigned char *) (&attr->read_format + 1), sizeof(uint64_t));
+
+	attr->wakeup.wakeup_events = bswap_64(attr->wakeup.wakeup_events);
+	attr->bp_type = bswap_32(attr->bp_type);
+	attr->bp1.bp_addr = bswap_64(attr->bp1.bp_addr);
+	attr->bp2.bp_len = bswap_64(attr->bp2.bp_len);
+	attr->branch_sample_type = bswap_64(attr->branch_sample_type);
+	attr->sample_regs_user = bswap_64(attr->sample_regs_user);
+	attr->sample_stack_user = bswap_32(attr->sample_stack_user);
+}
+
 /*
  * read data section from the buffer. Will stop
  * when the end of the data section is reached
@@ -235,6 +318,11 @@ display_id(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_event_at
 		ret = read_buffer(desc, &pid, sizeof(pid));
 		if (ret)
 			errx(1, "cannot read PID");
+
+		if (desc->needs_bswap) {
+			pid.pid = bswap_32(pid.pid);
+			pid.tid = bswap_32(pid.tid);
+		}
 #ifdef DBUG
 		fprintf(stderr," PID:%d TID:%d", pid.pid, pid.tid);
 #endif
@@ -244,6 +332,9 @@ display_id(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_event_at
 		ret = read_buffer(desc, &val64, sizeof(val64));
 		if (ret)
 			errx(1, "cannot read time");
+
+		if (desc->needs_bswap)
+			val64 = bswap_64(val64);
 
 		if (time)
 			*time = val64;
@@ -257,6 +348,9 @@ display_id(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_event_at
 		if (ret)
 			errx(1, "cannot read id");
 
+		if (desc->needs_bswap)
+			id = bswap_64(id);
+
 #ifdef DBUG
 		fprintf(stderr," ID:%"PRIu64, id);
 #endif
@@ -266,6 +360,9 @@ display_id(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_event_at
 		ret = read_buffer(desc, &val64, sizeof(val64));
 		if (ret)
 			errx(1, "cannot read stream_id");
+
+		if (desc->needs_bswap)
+			id = bswap_64(id);
 
 #ifdef DBUG
 		fprintf(stderr," STREAM_ID:%"PRIu64, val64);
@@ -277,6 +374,9 @@ display_id(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_event_at
 		ret = read_buffer(desc, &cpu, sizeof(cpu));
 		if (ret)
 			errx(1, "cannot read cpu");
+
+		if (desc->needs_bswap)
+			cpu.cpu = bswap_32(cpu.cpu);
 #ifdef DBUG
 		fprintf(stderr," CPU:%u", cpu.cpu);
 #endif
@@ -292,6 +392,11 @@ display_lost(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_event_
 	ret = read_buffer(desc, &lost, sizeof(lost));
 	if (ret)
 		errx(1, "cannot read lost info");
+
+	if (desc->needs_bswap) {
+		lost.id   = bswap_64(lost.id);
+		lost.lost = bswap_64(lost.lost);
+	}
 
 	/* lost samples for event */
 #ifdef DBUG
@@ -318,6 +423,14 @@ display_exit(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_event_
 	if (ret)
 		errx(1, "cannot read exit info");
 
+	if (desc->needs_bswap) {
+		grp.pid  = bswap_32(grp.pid);
+		grp.ppid = bswap_32(grp.ppid);
+		grp.tid  = bswap_32(grp.tid);
+		grp.ptid = bswap_32(grp.ptid);
+		grp.time = bswap_64(grp.time);
+	}
+ 
 #ifdef DBUG
 	fprintf(stderr,"EXIT: PID:%d TID:%d TIME:%"PRIu64, grp.pid, grp.tid, grp.time);
 #endif
@@ -338,22 +451,19 @@ display_throttle(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_ev
 	if (ret)
 		errx(1, "cannot read throttling info");
 
-	/*
- 	 * correlate event id to actual attr so we can print the config field
- 	 * to identify (somewhat) the event
- 	 */
-	for (i = 0 ; i < nr_ids; i++)
-		if (event_ids[i].id == thr.id)
-			break;
+	if (desc->needs_bswap) {
+		thr.time      = bswap_64(thr.time);
+		thr.id        = bswap_64(thr.id);
+		thr.stream_id = bswap_64(thr.stream_id);
+	}
+
+	i =  id_array[(int) (thr.id - min_event_id)];
 
 #ifdef DBUG
-	if (i == nr_ids)
-		fprintf(stderr,"THROTTLE: EVENT:%"PRIu64" CFG:??? STREAMID:%"PRIu64, thr.id, thr.stream_id);
-	else
-		fprintf(stderr,"THROTTLE: EVENT:%"PRIu64" CFG:0x%"PRIx64" STREAMID:%"PRIu64,
-			thr.id,
-			attrs[event_ids[i].attr_id].attr.config,
-			thr.stream_id);
+	fprintf(stderr,"THROTTLE: EVENT:%"PRIu64" CFG:0x%"PRIx64" STREAMID:%"PRIu64,
+		thr.id,
+		global_attrs[i].attr.config,
+		thr.stream_id);
 #endif
 
 	if (desc->sample_id_all)
@@ -373,22 +483,19 @@ display_unthrottle(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_
 	if (ret)
 		errx(1, "cannot read throttling info");
 
-	/*
- 	 * correlate event id to actual attr so we can print the config field
- 	 * to identify (somewhat) the event
- 	 */
-	for (i = 0 ; i < nr_ids; i++)
-		if (event_ids[i].id == thr.id)
-			break;
+	if (desc->needs_bswap) {
+		thr.time = bswap_64(thr.time);
+		thr.id = bswap_64(thr.id);
+		thr.stream_id = bswap_64(thr.stream_id);
+	}
+
+	i =  id_array[(int) (thr.id - min_event_id)];
 
 #ifdef DBUG
-	if (i == nr_ids)
-		fprintf(stderr,"UNTHROTTLE: EVENT:%"PRIu64" CFG:??? STREAMID:%"PRIu64, thr.id, thr.stream_id);
-	else
-		fprintf(stderr,"UNTHROTTLE: EVENT:%"PRIu64" CFG:0x%"PRIx64" STREAMID:%"PRIu64,
-			thr.id,
-			attrs[event_ids[i].attr_id].attr.config,
-			thr.stream_id);
+	fprintf(stderr,"UNTHROTTLE: EVENT:%"PRIu64" CFG:0x%"PRIx64" STREAMID:%"PRIu64,
+		thr.id,
+		global_attrs[i].attr.config,
+		thr.stream_id);
 #endif
 
 	if (desc->sample_id_all)
@@ -438,6 +545,11 @@ display_comm(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_event_
 	ret = read_buffer(desc, &comm, sizeof(comm));
 	if (ret)
 		errx(1, "cannot read comm data");
+
+	if (desc->needs_bswap) {
+		comm.pid = bswap_32(comm.pid);
+		comm.tid = bswap_32(comm.tid);
+	}
 
 	sz = ehdr->size - sizeof(comm) - sizeof(*ehdr) - desc->sz_sample_id_all;
 	str = malloc(sz);
@@ -503,6 +615,14 @@ display_fork(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_event_
 	if (ret)
 		errx(1, "cannot read fork data");
 
+	if (desc->needs_bswap) {
+		f.pid  = bswap_32(f.pid);
+		f.ppid = bswap_32(f.ppid);
+		f.tid  = bswap_32(f.tid);
+		f.ptid = bswap_32(f.ptid);
+		f.time = bswap_64(f.time);
+	}
+
 #ifdef DBUG
 	fprintf(stderr,"FORK: PID:%d TID:%d PPID:%d PTID:%d TIME:%"PRIu64,
 		f.pid,
@@ -555,10 +675,13 @@ perf_display_raw(bufdesc_t *desc)
 	if (ret)
 		errx(1, "cannot read raw size");
 
+	if (desc->needs_bswap)
+		raw_sz = bswap_32(raw_sz);
+
 	sz += sizeof(raw_sz);
 
 #ifdef DBUG
-	fprintf(stderr,"\n\tRAWSZ:%u\n", raw_sz);
+	fprintf(stderr,"RAWSZ:%u\n", raw_sz);
 #endif
 
 	buf = malloc(raw_sz);
@@ -597,6 +720,10 @@ perf_display_branch_stack(bufdesc_t *desc)
        ret = read_buffer(desc, &nr, sizeof(nr));
        if (ret)
                errx(1, "cannot read branch stack nr");
+
+	if (desc->needs_bswap)
+		nr = bswap_64(nr);
+
 #ifdef ANALYZE
 	lbr_data = (lbr_record_data *)calloc(1,sizeof(lbr_record_data)*nr);
 	if(lbr_data == NULL)
@@ -612,6 +739,13 @@ perf_display_branch_stack(bufdesc_t *desc)
                ret = read_buffer(desc, &b, sizeof(b));
                if (ret)
                        errx(1, "cannot read branch stack entry");
+
+		if (desc->needs_bswap) {
+			b.from = bswap_64(b.from);
+			b.to   = bswap_64(b.to);
+			mem_bswap_64((unsigned char *)(&b.to +1), sizeof(uint64_t));
+		}
+
 #ifdef ANALYZE
 		lbr_data[i].source = b.from;
 		lbr_data[i].destination = b.to;
@@ -626,6 +760,207 @@ perf_display_branch_stack(bufdesc_t *desc)
                        (b.mispredicted ? 'Y' :'N'));
 #endif
        }
+}
+
+static void perf_display_data_src(bufdesc_t *desc)
+{
+	uint64_t val, lvl;
+	union perf_mem_data_src dsrc;
+	int ret;
+
+
+	ret = read_buffer(desc, &val, sizeof(val));
+	if (ret)
+		errx(1, "cannot read weight");
+
+	if (desc->needs_bswap)
+		val = bswap_64(val);
+
+#ifdef DBUG
+	fprintf(stderr,"DSRC:0x%"PRIx64" ", val);
+#endif
+	dsrc.val = val;
+
+#ifdef DBUG
+		fprintf(stderr, "[ ");
+#endif
+
+	if (dsrc.mem_op & PERF_MEM_OP_LOAD) {
+#ifdef DBUG
+		fprintf(stderr, "OP_LOAD ");
+#endif
+	}
+	if (dsrc.mem_op & PERF_MEM_OP_STORE) {
+#ifdef DBUG
+		fprintf(stderr, "OP_STORE ");
+#endif
+	}
+	if ( dsrc.mem_op & PERF_MEM_OP_NA) {
+#ifdef DBUG
+		fprintf(stderr, "OP_UNKNOWN ");
+#endif
+	}
+
+	lvl = dsrc.mem_lvl;
+
+	/*
+	 * Multiple lvl bits may be set so use if instead of
+	 * switch-case
+	 */
+	if (lvl & PERF_MEM_LVL_L1) {
+#ifdef DBUG
+		fprintf(stderr, "LVL_L1 ");
+#endif
+	}
+	if (lvl & PERF_MEM_LVL_LFB) {
+#ifdef DBUG
+		fprintf(stderr, "LVL_LFB ");
+#endif
+	}
+	if (lvl & PERF_MEM_LVL_L2) {
+#ifdef DBUG
+		fprintf(stderr, "LVL_L2 ");
+#endif
+	}
+	if (lvl & PERF_MEM_LVL_L3) {
+#ifdef DBUG
+		fprintf(stderr, "LVL_L3 ");
+#endif
+	}
+	if (lvl & PERF_MEM_LVL_LOC_RAM) {
+#ifdef DBUG
+		fprintf(stderr, "LVL_LOCAL_RAM ");
+#endif
+	}
+	if (lvl & PERF_MEM_LVL_REM_RAM1) {
+#ifdef DBUG
+		fprintf(stderr, "LVL_REMOTE_RAM_1_HOP");
+#endif
+	}
+	if (lvl & PERF_MEM_LVL_REM_RAM2) {
+#ifdef DBUG
+		fprintf(stderr, "LVL_REMOTE_RAM_2_HOPS");
+#endif
+	}
+	if (lvl & PERF_MEM_LVL_REM_CCE1) {
+#ifdef DBUG
+		fprintf(stderr, "LVL_REMOTE_CACHE_1_HOP");
+#endif
+	}
+	if (lvl & PERF_MEM_LVL_REM_CCE2) {
+#ifdef DBUG
+		fprintf(stderr, "LVL_REMOTE_CACHE_2_HOPS ");
+#endif
+	}
+	if (lvl & PERF_MEM_LVL_IO) {
+#ifdef DBUG
+		fprintf(stderr, "LVL_I/O ");
+#endif
+	}
+	if (lvl & PERF_MEM_LVL_UNC) {
+#ifdef DBUG
+		fprintf(stderr, "LVL_UNCACHED ");
+#endif
+	}
+	if (lvl & PERF_MEM_LVL_NA) {
+#ifdef DBUG
+		fprintf(stderr, "LVL_UNKNOWN ");
+#endif
+	}
+
+	if (lvl & PERF_MEM_LVL_HIT) {
+#ifdef DBUG
+		fprintf(stderr, "LVL_HIT ");
+#endif
+	}
+
+	if (lvl & PERF_MEM_LVL_MISS) {
+#ifdef DBUG
+		fprintf(stderr, "LVL_MISS ");
+#endif
+	}
+
+	if (dsrc.mem_snoop & PERF_MEM_SNOOP_NONE) {
+#ifdef DBUG
+		fprintf(stderr, "SNOOP_NONE ");
+#endif
+	}
+	if (dsrc.mem_snoop & PERF_MEM_SNOOP_HIT) {
+#ifdef DBUG
+		fprintf(stderr, "SNOOP_HIT ");
+#endif
+	}
+	if (dsrc.mem_snoop & PERF_MEM_SNOOP_MISS) {
+#ifdef DBUG
+		fprintf(stderr, "SNOOP_HIT ");
+#endif
+	}
+	if (dsrc.mem_snoop & PERF_MEM_SNOOP_HITM) {
+#ifdef DBUG
+		fprintf(stderr, "SNOOP_HIT ");
+#endif
+	}
+	if (dsrc.mem_snoop & PERF_MEM_SNOOP_NA) {
+#ifdef DBUG
+		fprintf(stderr, "SNOOP_UNKNOWN ");
+#endif
+	}
+
+	if (dsrc.mem_lock & PERF_MEM_LOCK_LOCKED) {
+#ifdef DBUG
+		fprintf(stderr, "LOCKED ");
+#endif
+	}
+	if (dsrc.mem_lock & PERF_MEM_LOCK_NA) {
+#ifdef DBUG
+		fprintf(stderr, "LOCK_UNKNOWN ");
+#endif
+	}
+
+	/*
+	 * For DTLB multiple levels may be set
+	 * so use if instead of switch-case
+	 */
+	if (dsrc.mem_dtlb & PERF_MEM_TLB_L1) {
+#ifdef DBUG
+		fprintf(stderr, "DTLB_L1 ");
+#endif
+	}
+
+	if (dsrc.mem_dtlb & PERF_MEM_TLB_L2) {
+#ifdef DBUG
+		fprintf(stderr, "DTLB_L2 ");
+#endif
+	}
+
+	if (dsrc.mem_dtlb & PERF_MEM_TLB_WK) {
+#ifdef DBUG
+		fprintf(stderr, "DTLB_HW_WALKER ");
+#endif
+	}
+
+	if (dsrc.mem_dtlb & PERF_MEM_TLB_OS) {
+#ifdef DBUG
+		fprintf(stderr, "DTLB_OS_FAULT ");
+#endif
+	}
+
+	if (dsrc.mem_dtlb & PERF_MEM_TLB_HIT) {
+#ifdef DBUG
+		fprintf(stderr, "DTLB_HIT ");
+#endif
+	}
+
+	if (dsrc.mem_dtlb & PERF_MEM_TLB_MISS) {
+#ifdef DBUG
+		fprintf(stderr, "DTLB_MISS ");
+#endif
+	}
+
+#ifdef DBUG
+		fprintf(stderr, "] ");
+#endif
+
 }
 
 static void
@@ -664,6 +999,9 @@ display_sample(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_even
 		ret = read_buffer(desc, &val64, sizeof(val64));
 		if (ret)
 			errx(1, "cannot read IP");
+
+		if (desc->needs_bswap)
+			val64 = bswap_64(val64);
 		/*
 		 * MISC_EXACT_IP indicates that kernel is returning
 		 * th  IIP of an instruction which caused the event, i.e.,
@@ -684,6 +1022,11 @@ display_sample(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_even
 		if (ret)
 			errx(1, "cannot read PID");
 
+ 
+		if (desc->needs_bswap) {
+			pid.pid = bswap_32(pid.pid);
+			pid.tid = bswap_32(pid.tid);
+		}
 #ifdef DBUG
 		fprintf(stderr,"PID:%d TID:%d ", pid.pid, pid.tid);
 #endif
@@ -694,6 +1037,8 @@ display_sample(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_even
 		if (ret)
 			errx(1, "cannot read time");
 
+		if (desc->needs_bswap)
+			val64 = bswap_64(val64);
 #ifdef DBUG
 		fprintf(stderr,"TIME:%'"PRIu64" ", val64);
 #endif
@@ -707,6 +1052,8 @@ display_sample(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_even
 		if (ret)
 			errx(1, "cannot read addr");
 
+		if (desc->needs_bswap)
+			val64 = bswap_64(val64);
 #ifdef DBUG
 		fprintf(stderr,"ADDR:%#016"PRIx64" ", val64);
 #endif
@@ -716,6 +1063,9 @@ display_sample(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_even
 		ret = read_buffer(desc, &id, sizeof(id));
 		if (ret)
 			errx(1, "cannot read id");
+
+		if (desc->needs_bswap)
+			id = bswap_64(id);
 
 #ifdef DBUG
 		fprintf(stderr,"ID:%"PRIu64" ", id);
@@ -730,6 +1080,8 @@ display_sample(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_even
 		if (ret)
 			errx(1, "cannot read stream_id");
 
+		if (desc->needs_bswap)
+			val64 = bswap_64(val64);
 #ifdef DBUG
 		fprintf(stderr,"STREAM_ID:%"PRIu64" ", val64);
 #endif
@@ -739,6 +1091,9 @@ display_sample(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_even
 		ret = read_buffer(desc, &cpu, sizeof(cpu));
 		if (ret)
 			errx(1, "cannot read cpu");
+
+		if (desc->needs_bswap)
+			cpu.cpu = bswap_32(cpu.cpu);
 #ifdef DBUG
 		fprintf(stderr,"CPU:%u ", cpu.cpu);
 #endif
@@ -748,6 +1103,9 @@ display_sample(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_even
 		ret = read_buffer(desc, &val64, sizeof(val64));
 		if (ret)
 			errx(1, "cannot read period");
+
+		if (desc->needs_bswap)
+			val64 = bswap_64(val64);
 #ifdef DBUG
 		fprintf(stderr,"PERIOD:%'"PRIu64" ", val64);
 #endif
@@ -785,47 +1143,67 @@ display_sample(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_even
 		if(i > num_events)errx(1, "BAD EVENT ID orig = %ld, event_id = %ld\n",orig_event_id,event_id);
 
 		fmt = global_attrs[i].attr.read_format;
+#ifdef DBUG
+                fprintf(stderr, "FMT=0x%"PRIx64" ", fmt);
+#endif
 
 		if (fmt & PERF_FORMAT_GROUP) {
 			ret = read_buffer(desc, &nr, sizeof(nr));
 			if (ret)
 				errx(1, "cannot read nr");
 
+			if (desc->needs_bswap)
+				nr = bswap_64(nr);
+#ifdef DBUG
+			fprintf(stderr, "NR:%"PRIu64" ", nr);
+#endif
 			time_enabled = time_running = 1;
 
 			if (fmt & PERF_FORMAT_TOTAL_TIME_ENABLED) {
 				ret = read_buffer(desc, &time_enabled, sizeof(time_enabled));
 				if (ret)
 					errx(1, "cannot read timing info");
+
+				if (desc->needs_bswap)
+					time_enabled = bswap_64(time_enabled);
+#ifdef DBUG
+				fprintf(stderr, "ENA:%'"PRIu64" ", time_enabled);
+#endif
 			}
 
 			if (fmt & PERF_FORMAT_TOTAL_TIME_RUNNING) {
 				ret = read_buffer(desc, &time_running, sizeof(time_running));
 				if (ret)
 					errx(1, "cannot read timing info");
+
+				if (desc->needs_bswap)
+					time_running = bswap_64(time_running);
+#ifdef DBUG
+				fprintf(stderr, "RUN:%'"PRIu64" ", time_running);
+#endif
 			}
 
-#ifdef DBUG
-//			fprintf(stderr,"ENA=%'"PRIu64" RUN=%'"PRIu64" NR=%"PRIu64" ", time_enabled, time_running, nr);
-			fprintf(stderr,"ENA=%"PRIu64" RUN=%"PRIu64" NR=%"PRIu64" \n", time_enabled, time_running, nr);
-#endif
 
 			while(nr--) {
 				ret = read_buffer(desc, &val64, sizeof(val64));
 				if (ret) 
 					errx(1, "cannot read group value");
 
+				if (desc->needs_bswap)
+					val64 = bswap_64(val64);
+#ifdef DBUG
+				fprintf(stderr, "VAL:%"PRIu64, val64);
+#endif
 				if (fmt & PERF_FORMAT_ID) {
 					ret = read_buffer(desc, &id, sizeof(id));
 					if (ret)
 						errx(1, "cannot read leader id");
+					if (desc->needs_bswap)
+						id = bswap_64(id);
 #ifdef DBUG
 					fprintf(stderr,"ID:%"PRIu64" ", id);
 #endif
 				}
-#ifdef DBUG
-				fprintf(stderr,"VAL:%"PRIu64" \n", val64);
-#endif
 			}
 		} else {
 			/*
@@ -834,34 +1212,48 @@ display_sample(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_even
 			ret = read_buffer(desc, &val64, sizeof(val64));
 			if (ret)
 				errx(1, "cannot read value");
+ 
+			if (desc->needs_bswap)
+				val64 = bswap_64(val64);
+#ifdef DBUG
+			fprintf(stderr, "VAL:%"PRIu64, val64);
+#endif
 
 			if (fmt & PERF_FORMAT_TOTAL_TIME_ENABLED) {
 				ret = read_buffer(desc, &time_enabled, sizeof(time_enabled));
 				if (ret)
 					errx(1, "cannot read timing info");
+
+				if (desc->needs_bswap)
+					time_enabled = bswap_64(time_enabled);
+#ifdef DBUG
+				fprintf(stderr, "ENA:%'"PRIu64" ", time_enabled);
+#endif
 			}
 
 			if (fmt & PERF_FORMAT_TOTAL_TIME_RUNNING) {
 				ret = read_buffer(desc, &time_running, sizeof(time_running));
 				if (ret)
 					errx(1, "cannot read timing info");
-			}
+
+				if (desc->needs_bswap)
+					time_running = bswap_64(time_running);
 #ifdef DBUG
-			fprintf(stderr,"ENA:%"PRIu64" RUN:%"PRIu64" \n", time_enabled, time_running);
+				fprintf(stderr, "RUN:%'"PRIu64" ", time_running);
 #endif
+			}
 
 			if (fmt & PERF_FORMAT_ID) {
 				ret = read_buffer(desc, &id, sizeof(id));
 				if (ret)
 					errx(1, "cannot read leader id");
+
+				if (desc->needs_bswap)
+					id = bswap_64(id);
 #ifdef DBUG
 				fprintf(stderr,"ID:%"PRIu64" \n", id);
 #endif
 			}
-
-#ifdef DBUG
-			fprintf(stderr,"VAL:%"PRIu64" \n", val64);
-#endif
 		}
 	}
 
@@ -872,6 +1264,8 @@ display_sample(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_even
 		if (ret)
 			errx(1, "cannot read callchain nr");
 
+		if (desc->needs_bswap)
+			nr = bswap_64(nr);
 		while(nr--) {
 			ret = read_buffer(desc, &ip, sizeof(ip));
 			if (ret)
@@ -889,6 +1283,27 @@ display_sample(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_even
 	if (type & PERF_SAMPLE_BRANCH_STACK)
 		perf_display_branch_stack(desc);
 
+	/*
+	 * XXX: add PERF_SAMPLE_USER_REGS
+	 * XXX: add PERF_SAMPLE_USER_STACK
+	 */
+
+	if (type & PERF_SAMPLE_WEIGHT) {
+		uint64_t val;
+		ret = read_buffer(desc, &val, sizeof(val));
+		if (ret)
+			errx(1, "cannot read weight");
+
+		if (desc->needs_bswap)
+			val = bswap_64(val);
+//#ifdef DBUG
+#if 1
+		fprintf(stderr,"WEIGHT:%"PRIu64" ", val);
+#endif
+	}
+
+	if (type & PERF_SAMPLE_DATA_SRC)
+		perf_display_data_src(desc);
 #ifdef DBUG
 	fputc('\n',stderr);
 #endif
@@ -976,9 +1391,13 @@ display_sample(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_even
 		pid.pid,pid.tid,ip,cpu.cpu, local_mmap->addr,time_enabled,time_running,id,event_id,orig_event_id);
 #endif
 
+//    set start and last times observed on each core
+	if(core_start_time[cpu.cpu] == 0)core_start_time[cpu.cpu] = this_time;
+	core_last_time[cpu.cpu] = this_time;
+
         ret = increment_module_struc(pid.pid,pid.tid,ip,event_id,cpu.cpu,local_mmap,time_enabled, time_running);
 
-		if(debug_flag == 1)
+//		if(debug_flag == 1)
 #ifdef DBUGA
         fprintf(stderr," returned from increment module\n");
 #endif
@@ -991,6 +1410,9 @@ display_sample(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_even
 //	if so also add sample to psuedo pid = -1 to aggregate all kernel space activity
 	if(ip >= base_kern_address)
 		{
+#ifdef DBUGA
+	        fprintf(stderr," address above base_kern_address call bind sample with pid = %d  to start kernel aggregation\n",pid_ker);
+#endif
 		local_mmap = bind_sample(pid_ker,ip,this_time);
 		if(local_mmap == NULL)
 			{
@@ -1124,6 +1546,14 @@ display_mmap(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_event_
 	if (ret)
 		errx(1, "cannot read mmap data");
 
+	if (desc->needs_bswap) {
+		mm.pid = bswap_32(mm.pid);
+		mm.tid = bswap_32(mm.tid);
+		mm.addr = bswap_64(mm.addr);
+		mm.len = bswap_64(mm.len);
+		mm.pgoff = bswap_64(mm.pgoff);
+	}
+
 	sz = ehdr->size - sizeof(mm) - sizeof(*ehdr) - desc->sz_sample_id_all;
 	filename = malloc(sz);
 	if (!filename)
@@ -1134,7 +1564,7 @@ display_mmap(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_event_
 		err(1, "cannot read mmap filename");
 
 #ifdef DBUG
-	fprintf(stderr,"MMAP: PID:%d TID:%d ADDR:0x%"PRIx64" LEN:0x%"PRIx64" PGOFF:0x%"PRIx64" FILE:%s\n",
+	fprintf(stderr,"MMAP: PID:%d TID:%d ADDR:0x%"PRIx64" LEN:0x%"PRIx64" PGOFF:0x%"PRIx64" FILE:%s",
 		mm.pid,
 		mm.tid,
 		mm.addr,
@@ -1146,7 +1576,7 @@ display_mmap(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_event_
 	if (desc->sample_id_all)
 		display_id(desc, ehdr, attr, &t);
 #ifdef DBUG
-	fputc(',',stderr);
+	fputc('\n',stderr);
 #endif
 
 #ifdef ANALYZE
@@ -1255,6 +1685,8 @@ read_attrs(bufdesc_t *desc, struct perf_file_header *hdr)
 		nr = j + attrs[i].ids.size / sizeof(id);
 		for (; j < nr; j++) {
 			raw_read_buffer(desc, &id, sizeof(id));
+			if (desc->needs_bswap)
+				id = bswap_64(id);
 			event_ids[j].id = id;
 			event_ids[j].attr_id = i;
 		}
@@ -1322,9 +1754,16 @@ read_attr_from_pipe(bufdesc_t *desc, struct perf_event_header *ehdr)
 
         raw_read_buffer(desc, attr, PERF_ATTR_SIZE_VER0);
 
+	if (desc->needs_bswap)
+		sz = bswap_32(attr->size);
+	else
+		sz = attr->size;
+
 #ifdef DBUG
-        fprintf(stderr,"on file sizeof(perf_event_attr)=%d ABI0=%d\n", attr->size, PERF_ATTR_SIZE_VER0);
+	printf("in pipe sizeof(perf_event_attr)=%zu\n", sz);
         fprintf(stderr,"reader sizeof(perf_event_attr)=%zu\n", sizeof(*attr));
+#endif
+#ifdef DBUG
         fprintf(stderr,"attr.type=%d attr.config=0x%"PRIx64" attr.period=%"PRIu64"\n",
                 attr->type,
                 attr->config,
@@ -1334,14 +1773,13 @@ read_attr_from_pipe(bufdesc_t *desc, struct perf_event_header *ehdr)
         /*
          * size = 0 <=> attr->size PERF_ATTR_SIZE_VER0
          */
-        if (attr->size == 0 || attr->size == PERF_ATTR_SIZE_VER0) {
+        if (sz == 0 || sz == PERF_ATTR_SIZE_VER0) {
 #ifdef DBUG
                 fprintf(stderr,"on file sizeof(perf_event_attr) = ABI0 (%d bytes)\n", PERF_ATTR_SIZE_VER0);
 #endif
                 goto read_ids;
         }
 
-        sz = attr->size;
         if (sz > sizeof(*attr)) {
                 sz = sizeof(*attr);
                 warnx("perf.data file contains a newer revision (%zu bytes) of perf_event_attr, some field will be ignored", sz - PERF_ATTR_SIZE_VER0);
@@ -1364,6 +1802,11 @@ read_attr_from_pipe(bufdesc_t *desc, struct perf_event_header *ehdr)
                 total_sz -= sz;
 
         }
+
+	/* now we have everything we know about, we can swap if necessary */
+	if (desc->needs_bswap)
+		bswap_event_attr(attr);
+
         /* skip what we don't know about */
         if (attr->size > sizeof(*attr)) {
                 sz = attr->size - sizeof(*attr);
@@ -1408,6 +1851,8 @@ read_ids:
                 uint64_t id;
 
                 raw_read_buffer(desc, &id, sizeof(id));
+		if (desc->needs_bswap)
+			id = bswap_64(id);
 
                 event_ids[nr].id = id;
                 event_ids[nr].attr_id = nr_attrs - 1;
@@ -1450,6 +1895,9 @@ display_event_type(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_
         if (ret)
                 errx(1, "cannot read event type");
 
+	if (desc->needs_bswap)
+		ev.event_id = bswap_64(ev.event_id);
+
         ret = read_buffer(desc, ev.name, sz);
         if (ret)
                 errx(1, "cannot read event type");
@@ -1466,11 +1914,19 @@ display_tracing(bufdesc_t *desc, struct perf_event_header *ehdr, struct perf_eve
         struct tracing_data_event d;
 
         raw_read_buffer(desc, &d, sizeof(d));
+	if (desc->needs_bswap)
+		d.size = bswap_32(d.size);
 
 #ifdef DBUG
         fprintf(stderr,"TRACING: SIZE:%d (skipped)\n", d.size);
 #endif
         skip_buffer(desc, d.size);
+}
+
+static void
+bswap_buildid_event_type(struct build_id_event_type *b)
+{
+	b->pid = bswap_32(b->pid);
 }
 
 static void
@@ -1481,6 +1937,8 @@ read_one_buildid(bufdesc_t *desc, struct perf_event_header *ehdr)
         char *str;
 
         raw_read_buffer(desc, &b, sizeof(b));
+	if (desc->needs_bswap)
+		bswap_buildid_event_type(&b);
 
         len = ehdr->size - sizeof(b) - sizeof(*ehdr);
         if (len <= 0)
@@ -1588,6 +2046,9 @@ parse(bufdesc_t *desc)
 		if (ret)
 			return; /* nothing to read */
 
+		if (desc->needs_bswap)
+			bswap_ehdr(&ehdr);
+
 		//fprintf(stderr,"SAMPLE.TYPE:%d SAMPLE.SZ:%d\n", ehdr.type, ehdr.size);
 
                 if (ehdr.type < PERF_RECORD_MMAP || ehdr.type >= PERF_RECORD_HEADER_MAX) {
@@ -1631,6 +2092,9 @@ raw_read_string(bufdesc_t *desc)
 	raw_read_buffer(desc, &len, sizeof(len));
 	if (len < 0)
 		err(1, "invalid event/hostname string len=%d", len);
+
+	if (desc->needs_bswap)
+		len = bswap_32(len);
 
 	str = malloc(len);
 	if (!str)
@@ -1680,6 +2144,8 @@ read_buildids(bufdesc_t *desc, struct perf_file_header *hdr)
 
 	while (pos < end) {
 		raw_read_buffer(desc, &ehdr, sizeof(ehdr));
+		if (desc->needs_bswap)
+			bswap_ehdr(&ehdr);
 		read_one_buildid(desc, &ehdr);
 		pos = desc->cur.pos;
 	}
@@ -1723,7 +2189,14 @@ read_osrelease(bufdesc_t *desc, struct perf_file_header *hdr)
 static void
 read_arch(bufdesc_t *desc, struct perf_file_header *hdr)
 {
+	FILE * arch_out,* which_out;
+	char pipe_buf[512],which_buf[512], which_cmd[512];
+	int pipe_buf_len = 512, len, access_status;
+	struct utsname uts;
+	int ret;
+	
 	char *str;
+	
 
 	str = raw_read_string(desc);
 	if (!str)
@@ -1735,8 +2208,60 @@ read_arch(bufdesc_t *desc, struct perf_file_header *hdr)
 
 	arch = str;
 
-//	free(str);
+	if(strcmp(arch,arch_x86_64) == 0)
+		{
+		arch_type_flag = 0;
+		objdump_bin = objdump_x86;
+		addr_mask = x86_addr_mask;
+		}
+	if(strcmp(arch,arch_arm32) == 0)
+		{
+		arch_type_flag = 1;
+		objdump_bin = objdump_arm32;
+		addr_mask = arm_addr_mask;
+		}
+	if(strcmp(arch,arch_ppc64) == 0)
+		{
+		arch_type_flag = 2;
+		objdump_bin = objdump_ppc64;
+		addr_mask = ppc64_addr_mask;
+		}
 
+	ret = uname(&uts);
+	if(ret == -1)
+		err(1, "cannot determine local arch");
+	local_arch = uts.machine;
+#ifdef DBUG
+	fprintf(stderr," arch = %s\n",arch);
+	fprintf(stderr," local_arch = %s\n",local_arch);
+#endif
+
+	if(strcmp(arch,local_arch) == 0)
+		{
+		objdump_bin = local_objdump;
+		}
+	objdump_len = strlen(objdump_bin) + 1;
+	fprintf(stderr," objdump was %s\n",objdump_bin);
+
+	sprintf(which_cmd,"which %s\0",objdump_bin);
+	which_out = popen(which_cmd, "r");
+	if(fgets(which_buf,pipe_buf_len,which_out) != NULL)
+		{
+		fprintf(stderr," objdump found at %s\n",which_buf);
+		found_objdump = 1;
+		}
+	else
+		{
+		fprintf(stderr," objdump not found with which\n");
+#ifdef ANALYZE
+		err(1, " objdump not found with which, analyzer must exit\n");
+#endif
+		}
+#ifdef ANALYZE
+	branch_function_init();
+#endif
+//	free(str);
+	fclose(which_out);
 }
 
 static void
@@ -1828,6 +2353,10 @@ read_nrcpus(bufdesc_t *desc, struct perf_file_header *hdr)
 
 	raw_read_buffer(desc, &nrcpus, sizeof(nrcpus));
 
+	if (desc->needs_bswap) {
+		nrcpus.nconf = bswap_32(nrcpus.nconf);
+		nrcpus.nonln = bswap_32(nrcpus.nonln);
+	}
 #ifdef DBUG
 	fprintf(stderr,"CPU config: %d\n", nrcpus.nconf);
 	fprintf(stderr,"CPU online: %d\n", nrcpus.nonln);
@@ -1850,8 +2379,13 @@ read_event_desc(bufdesc_t *desc, struct perf_file_header *hdr)
 	/* number of events */
 	raw_read_buffer(desc, &nre, sizeof(nre));
 
+	if (desc->needs_bswap)
+		nre = bswap_32(nre);
+
 	/* size of perf_event_attr in the file */
 	raw_read_buffer(desc, &sz, sizeof(sz));
+	if (desc->needs_bswap)
+		sz = bswap_32(sz);
 
 	buf = malloc(sz);
 	if (!buf)
@@ -1888,11 +2422,19 @@ read_event_desc(bufdesc_t *desc, struct perf_file_header *hdr)
 
 		memcpy(&attr, buf, msz);
 
+		if (desc->needs_bswap)
+			bswap_event_attr(&attr);
+
 		/* number of id */
 		raw_read_buffer(desc, &nri, sizeof(nri));
 
+		if (desc->needs_bswap)
+			nri = bswap_32(nri);
+
 //	start constructing the global_attrs entry
 		memcpy(&global_attrs[i].attr, buf, msz);
+		if (desc->needs_bswap)
+			bswap_event_attr(&global_attrs[i].attr);
 		global_attrs[i].nr_ids = nri;
 		global_attrs[i].ids = (uint64_t *)malloc(nri*sizeof(uint64_t));
 		if(global_attrs[i].ids == NULL)
@@ -1938,6 +2480,8 @@ read_event_desc(bufdesc_t *desc, struct perf_file_header *hdr)
 
 		for (j = 0 ; j < nri; j++) {
 			raw_read_buffer(desc, &id, sizeof(id));
+			if (desc->needs_bswap)
+				id = bswap_64(id);
 			global_attrs[i].ids[j] = id;
 			if(id > max_id)
 				{
@@ -2047,6 +2591,8 @@ read_cmdline(bufdesc_t *desc, struct perf_file_header *hdr)
 	 * record in the perf.data file
 	 */
 	raw_read_buffer(desc, &argc, sizeof(argc));
+	if (desc->needs_bswap)
+		argc = bswap_32(argc);
 	for (i = 0 ; i < argc; i++) {
 		str = raw_read_string(desc);
 #ifdef DBUG
@@ -2061,13 +2607,17 @@ static void
 read_cpu_topology(bufdesc_t *desc, struct perf_file_header *hdr)
 {
         uint32_t i, nr, cpu, socket_count, core_count,num_col;
-	int len,j;
-        char *str;
+	int len,j,k,l,m,base_core_count;
+        char *str, *nptr,*endptr;
+	long lower,upper;
 
 	socket_count = 0;
 	core_count = 0;
 
         raw_read_buffer(desc, &nr, sizeof(nr));
+	if (desc->needs_bswap)
+		nr = bswap_32(nr);
+
 	socket_count = nr;
 	fprintf(stderr,"first value of nr = %d\n",nr);
         for (i = 0 ; i < nr; i++) {
@@ -2078,18 +2628,39 @@ read_cpu_topology(bufdesc_t *desc, struct perf_file_header *hdr)
                 free(str);
         }
         raw_read_buffer(desc, &nr, sizeof(nr));
-	core_count = nr;
+	if (desc->needs_bswap)
+		nr = bswap_32(nr);
+	base_core_count = nr;
+	core_count = 0;
 	fprintf(stderr,"second value of nr = %d\n",nr);
         for (i = 0 ; i < nr; i++) {
                 str = raw_read_string(desc);
-                fprintf(stderr,"Thread siblings: %s\n", str);
 		len = strlen(str);
-		for(j = 0; j<len; j++)
-			if(str[j] == ',')core_count++;
-                fprintf(stderr,"Thread siblings: %s\n", str);
 #ifdef DBUG
                 fprintf(stderr,"Thread siblings: %s\n", str);
 #endif
+		nptr = str;
+//		figure out if the list is comma seperated or a range defined with -
+		while(nptr <= str+len)
+			{
+			lower = strtol(nptr,&endptr, 0);
+			if(*endptr == '-')
+				{
+				nptr = endptr+1;
+				upper = strtol(nptr,&endptr, 0);
+				nptr = endptr + 1;
+				core_count += upper - lower + 1;
+//			sleazy trick to deal with PPC numbering 
+				base_core_count = 0;
+				}
+			else 
+				{
+				nptr = endptr + 1;
+				core_count++;
+				}
+			}
+//		core_count += base_core_count;
+		fprintf(stderr," core_count = %d\n",core_count);
                 free(str);
         }
 #ifdef ANALYZE
@@ -2098,6 +2669,13 @@ read_cpu_topology(bufdesc_t *desc, struct perf_file_header *hdr)
 
 
 	fprintf(stderr," num_cores = %d, num_sockets = %d\n",num_cores,num_sockets);
+
+	core_start_time = (uint64_t*)calloc(num_cores,sizeof(uint64_t));
+	if(core_start_time == NULL)
+		err(1,"calloc of core_start_time failed in read_cpu_topology for num_cores = %d",num_cores);
+	core_last_time = (uint64_t*)calloc(num_cores,sizeof(uint64_t));
+	if(core_last_time == NULL)
+		err(1,"calloc of core_last_time failed in read_cpu_topology for num_cores = %d",num_cores);
 
 	init_order();
 	num_branch = global_event_order->num_branch;
@@ -2141,12 +2719,20 @@ read_numa_topology(bufdesc_t *desc, struct perf_file_header *hdr)
         char *str;
 
         raw_read_buffer(desc, &nr, sizeof(nr));
+	if (desc->needs_bswap)
+		nr = bswap_32(nr);
 
         for (i = 0 ; i < nr; i++) {
                 raw_read_buffer(desc, &n, sizeof(n));
+		if (desc->needs_bswap)
+			n = bswap_32(n);
                 raw_read_buffer(desc, &mem_total, sizeof(mem_total));
+		if (desc->needs_bswap)
+			mem_total = bswap_64(mem_total);
                 raw_read_buffer(desc, &mem_free, sizeof(mem_free));
                 str = raw_read_string(desc);
+		if (desc->needs_bswap)
+			mem_free = bswap_64(mem_free);
 
 #ifdef DBUG
                 fprintf(stderr,"Node%u meminfo : total = %"PRIu64" kB, free = %"PRIu64" kB\n",
@@ -2161,7 +2747,6 @@ read_numa_topology(bufdesc_t *desc, struct perf_file_header *hdr)
         }
 }
 
-
 static int
 read_attr_from_file(bufdesc_t *desc, struct perf_file_attr *attrs)
 {
@@ -2174,26 +2759,25 @@ read_attr_from_file(bufdesc_t *desc, struct perf_file_attr *attrs)
 	 * to be at least that big
 	 */
 	raw_read_buffer(desc, attr, PERF_ATTR_SIZE_VER0);
+	if (desc->needs_bswap)
+		sz = bswap_32(attr->size);
+	else
+		sz = attr->size;
 
 #ifdef DBUG
-	fprintf(stderr,"on file sizeof(perf_event_attr)=%d\n", attr->size);
+	fprintf(stderr, "on file sizeof(perf_event_attr)=%zu\n", sz);
 	fprintf(stderr,"reader sizeof(perf_event_attr)=%zu\n", sizeof(*attr));
-	fprintf(stderr,"attr.type=%d attr.config=0x%"PRIx64" attr.period=%"PRIu64"\n",
-                attr->type,
-                attr->config,
-                attr->sample.sample_period);
 #endif
 	/*
 	 * size = 0 <=> attr->size PERF_ATTR_SIZE_VER0
 	 */
-	if (attr->size == 0 || attr->size == PERF_ATTR_SIZE_VER0) {
+	if (sz == 0 || sz == PERF_ATTR_SIZE_VER0) {
 #ifdef DBUG
-		fprintf(stderr,"on file sizeof(perf_event_attr) = ABI0 (%d bytes)\n", attr->size, PERF_ATTR_SIZE_VER0);
+		fprintf(stderr,"on file sizeof(perf_event_attr) = %zu ABI0 (%d bytes)\n", sz, PERF_ATTR_SIZE_VER0);
 #endif
 		return 0;
 	}
 
-	sz = attr->size;
 	if (sz > sizeof(*attr)) {
 		sz = sizeof(*attr);
 		warnx("perf.data file contains a newer revision (%zu bytes) of perf_event_attr, some field will be ignored", sz - PERF_ATTR_SIZE_VER0);
@@ -2212,6 +2796,18 @@ read_attr_from_file(bufdesc_t *desc, struct perf_file_attr *attrs)
 		 */
 		raw_read_buffer(desc, addr, sz);
 	}
+
+	/* now we have everything we know about, we can swap if necessary */
+	if (desc->needs_bswap)
+		bswap_event_attr(attr);
+
+#ifdef DBUG
+	fprintf(stderr,"attr.type=%d attr.config=0x%"PRIx64" attr.period=%"PRIu64"\n",
+                attr->type,
+                attr->config,
+                attr->sample.sample_period);
+#endif
+
 	/* skip what we don't know about */
 	if (attr->size > sizeof(*attr)) {
 		sz = attr->size - sizeof(*attr);
@@ -2225,6 +2821,10 @@ read_attr_from_file(bufdesc_t *desc, struct perf_file_attr *attrs)
 	}
 	/* read the file_section */
 	raw_read_buffer(desc, &attrs->ids, sizeof(struct perf_file_section));
+	if (desc->needs_bswap) {
+		attrs->ids.offset = bswap_64(attrs->ids.offset);
+		attrs->ids.size = bswap_64(attrs->ids.size);
+	}
 	return 0;
 }
 
@@ -2234,7 +2834,8 @@ read_total_mem(bufdesc_t *desc, struct perf_file_header *hdr)
 	uint64_t total_mem;
 
 	raw_read_buffer(desc, &total_mem, sizeof(total_mem));
-
+	if (desc->needs_bswap)
+		total_mem = bswap_64(total_mem);
 #ifdef DBUG
 	fprintf(stderr,"Total memory: %"PRIu64" kB\n", total_mem);
 #endif
@@ -2258,8 +2859,13 @@ read_pmu_mappings(bufdesc_t *desc, struct perf_file_header *hdr)
 	fprintf(stderr, "PMU_MAPPING: ");
 #endif
 	raw_read_buffer(desc, &nr, sizeof(nr));
+	if (desc->needs_bswap)
+		nr = bswap_32(nr);
 	while (nr--) {
 		raw_read_buffer(desc, &type, sizeof(type));
+		if (desc->needs_bswap)
+			type = bswap_32(type);
+
 		str = raw_read_string(desc);
 #ifdef DBUG
 		fprintf(stderr, "%s = %d ", str, type);
@@ -2289,53 +2895,75 @@ static void (*read_feature[HEADER_LAST_FEATURE])(bufdesc_t *, struct perf_file_h
 	[HEADER_PMU_MAPPINGS] = read_pmu_mappings,
 };
 
+static int fnbs(uint64_t *b, int nbits, int pos)
+{
+	int bm = sizeof(*b) * BITS_PER_BYTE;
+	int i = pos / bm;
+	int j = pos % bm;
+	int m = BITS_TO_U64(nbits);
+
+	for (; i < m; i++) {
+		for (; j < bm; j++)
+			if (b[i] & (1ULL << j))
+				return i * bm + j;
+		j = 0;
+	}
+	/* invalid bit index to mark error */
+	return nbits + 1;
+}
+
+#define for_each_feature(b, a, n)		\
+        for ((b) = fnbs((a), (n), (b));		\
+             (b) < (n);				\
+             (b) = fnbs((a), (n), (b) + 1))
+
 static void
 read_feature_bits(bufdesc_t *desc, struct perf_file_header *hdr)
 {
 	struct perf_file_section feat_sec;
-	uint64_t mask = hdr->adds_features[0];
+	int m = 0, i;
 	uint64_t pos;
-	int i;
+
+	for (i=0; i < sizeof(hdr->adds_features)>>2; i++) {
+		if (desc->needs_bswap)
+			hdr->adds_features[i] = bswap_32(hdr->adds_features[i]);
+                fprintf(stderr, "f[%d]=0x%lx\n", i, hdr->adds_features[i]);
+	}
 
 	/* feature bits are after data section */
 	pos = hdr->data.offset + hdr->data.size;
 
-	/*
-	 * would need a proper implementation of bitmasks
-	 */
-	if (HEADER_LAST_FEATURE > (sizeof(mask)<<3))
-		err(1, "reader can only handle first 64 features\n");
-
-	for (i = 0 ; i < HEADER_LAST_FEATURE; i++) {
-
-		if (!(mask &  (1ULL << i)))
-			continue;
-
-
+	for_each_feature(m, hdr->adds_features, HEADER_LAST_FEATURE) {
 		/* extract feature desc */
 		desc->cur.pos = pos;
 		raw_read_buffer(desc, &feat_sec, sizeof(feat_sec));
+		if (desc->needs_bswap) {
+			feat_sec.offset = bswap_64(feat_sec.offset);
+			feat_sec.size = bswap_64(feat_sec.size);
+		}
 
-		desc->feat[i].pos = feat_sec.offset;
-		desc->feat[i].end = feat_sec.offset + feat_sec.size;
+		desc->feat[m].pos = feat_sec.offset;
+		desc->feat[m].end = feat_sec.offset + feat_sec.size;
 
 		pos += sizeof(struct perf_file_section);
 
 		/* point to beginning of feature */
 		desc->cur.pos = feat_sec.offset;
 
-		if (read_feature[i])
-			read_feature[i](desc, hdr);
+		if (read_feature[m])
+			read_feature[m](desc, hdr);
 		else
-			fprintf(stderr,"contains feature %d but unspported by reader\n", i);
+			fprintf(stderr,"contains feature %d but unspported by reader\n", m);
 	}
 }
 
 static int
-validate_magic(uint64_t *magic)
+validate_magic(bufdesc_t *desc, uint64_t *magic)
 {
         int i;
 	int ret;
+
+	desc->needs_bswap = 0;
 
         fprintf(stderr, "on file magic string:\n");
 
@@ -2348,16 +2976,30 @@ validate_magic(uint64_t *magic)
         if (!ret)
                 return 1;
 
+#ifdef __LITTLE_ENDIAN
         ret = memcmp(magic, &__perf_magic2, sizeof(*magic));
         if (!ret)
                 return 1;
 
         ret = memcmp(magic, &__perf_magic2_sw, sizeof(*magic));
-        if (!ret)
-                warnx("reader does not yet support heterogeneous endianness\n");
+        if (!ret) {
+		desc->needs_bswap = 1;
+		printf("endianess mismatch, byte swapping activated\n");
+		return 1;
+	}
+#else /* BIG_ENDIAN */
+	ret = memcmp(magic, &__perf_magic2_sw, sizeof(*magic));
+	if (!ret)
+		return 1;
 
+	ret = memcmp(magic, &__perf_magic2, sizeof(*magic));
+	if (!ret) {
+		desc->needs_bswap = 1;
+		printf("endianess mismatch, byte swapping activated\n");
+		return 1;
+	}
+#endif
         return 0;
-
 }
 
 static void
@@ -2379,12 +3021,20 @@ read_file_header(bufdesc_t *desc)
 
 	raw_read_buffer(desc, &hdr, sizeof(hdr));
 
+	if (desc->needs_bswap) {
+		hdr.size = bswap_64(hdr.size);
+		hdr.attr_size = bswap_64(hdr.attr_size);
+		hdr.attrs.offset = bswap_64(hdr.attrs.offset);
+		hdr.attrs.size = bswap_64(hdr.attrs.size);
+		hdr.data.offset = bswap_64(hdr.data.offset);
+		hdr.data.size = bswap_64(hdr.data.size);
+		hdr.event_types.offset = bswap_64(hdr.event_types.offset);
+		hdr.event_types.size = bswap_64(hdr.event_types.size);
+	}
+
 #ifdef DBUG
 	fprintf(stderr,"file header size: %"PRIu64"\n", hdr.size);
 #endif
-	/*
-	 * XXX: assume same endianess (not bswap64())
-	 */
 	if (hdr.size != sizeof(hdr))
 		errx(1, "perf_file_header struct has unexpected size %"PRIu64, hdr.size);
 
@@ -2424,6 +3074,9 @@ read_pipe_header(bufdesc_t *desc)
 
         raw_read_buffer(desc, &hdr, sizeof(hdr));
 
+	if (desc->needs_bswap)
+		hdr.size = bswap_64(hdr.size);
+
 #ifdef DBUG
         fprintf(stderr,"file header size: %"PRIu64"\n", hdr.size);
 #endif
@@ -2455,9 +3108,11 @@ detect_piped_file(bufdesc_t *desc)
 
         raw_read_buffer(&d, &hdr, sizeof(hdr));
 
-        if (!validate_magic(&hdr.magic))
+	if (!validate_magic(desc, &hdr.magic))
                 errx(1, "not a perf.data file");
 
+	if (desc->needs_bswap)
+		hdr.size = bswap_32(hdr.size);
         /*
          * heuristic: detect pipe mode based on the size of the
          * on file header. Both file and pipe mode have the same
@@ -2660,17 +3315,24 @@ main(int argc, char **argv)
 		column_flag = 0;
 		if((asm_cutoff == asm_cutoff_def) && (global_func_count > big_func_count))asm_cutoff = asm_cutoff_big;
 //		loop through the hottest "asm_cuttoff" functions and create asm, source and cfg files
-	        hot_list(global_func_list);
-//		print out the function spreadsheet
-        	hotspot_function( global_func_list);
+		if(found_objdump == 1)
+		        hot_list(global_func_list);
+		fprintf(stderr,"normal termination\n");
+		}
+	else
+		{
+		fprintf(stderr,"No data in IP ranges defined by functions, exiting\n");
+		}
 //		print out the process/module spreadsheet
-		process_table();
+	process_table();
+//		print out the function spreadsheet
+       	hotspot_function( global_func_list);
 
-		num_col = num_events + global_event_order->num_branch + global_event_order->num_sub_branch +global_event_order->num_derived + 1;
-        	fprintf(stderr," bad rva count = %d, with %d samples, out of global_rva = %d, with %d total samples in modules with functions and %d total samples\n",
-			bad_rva, bad_sample_count, global_rva, total_function_sample_count, total_sample_count);
-		fprintf(stderr," num_col = %d, num_events = %d, num_branch = %d, num_sub_branch = %d, num_derived = %d\n",
-			num_col, num_events, global_event_order->num_branch, global_event_order->num_sub_branch, global_event_order->num_derived);
+	num_col = num_events + global_event_order->num_branch + global_event_order->num_sub_branch +global_event_order->num_derived + 1;
+       	fprintf(stderr," bad rva count = %d, with %d samples, out of global_rva = %d, with %d total samples in modules with functions and %d total samples\n",
+		bad_rva, bad_sample_count, global_rva, total_function_sample_count, total_sample_count);
+	fprintf(stderr," num_col = %d, num_events = %d, num_branch = %d, num_sub_branch = %d, num_derived = %d\n",
+		num_col, num_events, global_event_order->num_branch, global_event_order->num_sub_branch, global_event_order->num_derived);
 /*
 		fprintf(stderr,"main: global_sample_count totals  ");
 		for(i=0; i< num_col; i++)fprintf(stderr," %d,",global_sample_count[num_events*(num_cores+num_sockets) + i]);
@@ -2683,27 +3345,21 @@ main(int argc, char **argv)
 			fprintf(stderr,"\n");
 			}
 */
-		fprintf(stderr," total_lbr_entries = %d\n",total_lbr_entries);
-		total_struc_size = (uint64_t)sample_struc_count*(sizeof(sample_data) + sizeof(int)*get_count());
-		fprintf(stderr," total sample_struc's created = %d, for a total size of %ld\n",sample_struc_count, total_struc_size);
-		total_struc_size = (uint64_t)asm_struc_count*(sizeof(asm_data) + sizeof(int)*get_count());
-		fprintf(stderr," total asm_struc's created = %d, for a total size of %ld\n",asm_struc_count, total_struc_size);
-		total_struc_size = (uint64_t)basic_block_struc_count*(sizeof(basic_block_data) + sizeof(int)*get_count());
-		fprintf(stderr," total basic_block_struc's created = %d for a total size of %ld\n",basic_block_struc_count, total_struc_size);
-		retval = getrusage(RUSAGE_SELF,&r_usage);
-		if(retval != 0)
-			{
-			fprintf(stderr,"getrusage failed\n");
-			}
-		else
-			{
-		retval = fprintf(stderr," total memory usage from getrusage = %ld\n",r_usage.ru_maxrss);
-			}
-		fprintf(stderr,"normal termination\n");
+	fprintf(stderr," total_lbr_entries = %d\n",total_lbr_entries);
+	total_struc_size = (uint64_t)sample_struc_count*(sizeof(sample_data) + sizeof(int)*get_count());
+	fprintf(stderr," total sample_struc's created = %d, for a total size of %ld\n",sample_struc_count, total_struc_size);
+	total_struc_size = (uint64_t)asm_struc_count*(sizeof(asm_data) + sizeof(int)*get_count());
+	fprintf(stderr," total asm_struc's created = %d, for a total size of %ld\n",asm_struc_count, total_struc_size);
+	total_struc_size = (uint64_t)basic_block_struc_count*(sizeof(basic_block_data) + sizeof(int)*get_count());
+	fprintf(stderr," total basic_block_struc's created = %d for a total size of %ld\n",basic_block_struc_count, total_struc_size);
+	retval = getrusage(RUSAGE_SELF,&r_usage);
+	if(retval != 0)
+		{
+		fprintf(stderr,"getrusage failed\n");
 		}
 	else
 		{
-		fprintf(stderr,"No data in IP ranges defined by functions, exiting\n");
+	retval = fprintf(stderr," total memory usage from getrusage = %ld\n",r_usage.ru_maxrss);
 		}
 #endif
 

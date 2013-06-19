@@ -66,6 +66,7 @@ typedef struct function_struc{
 	basic_block_struc_ptr	first_bb;
 	source_line_struc_ptr	first_source_line;
 	char*			function_name;
+	char*			function_mangled_name;
 	uint64_t		function_rva_start;
 	uint64_t		function_length;
 	source_struc_ptr	source_file;
@@ -127,6 +128,7 @@ typedef struct module_struc{
 	char*			module_name;
 	char*			path;
 	char*			local_path;
+	char*			buildid;
 	uint64_t		starting_ip;
 	uint64_t		length;
 	uint64_t		time;
@@ -144,6 +146,7 @@ typedef struct module_struc{
 	int			local_calls;
 	int			remote_calls;
 	int			set_starting_ip;
+	int			bin_type;
 	}module_data;
 
 typedef struct thread_struc{
@@ -177,6 +180,7 @@ typedef struct process_struc{
 	int*			sample_order;
 	int			module_count;
 	uint32_t		pid;
+	uint32_t		tid_main;
 	int			cycle_count;
 	int			inst_count;
 	int			total_sample_count;
@@ -302,6 +306,7 @@ typedef struct asm_struc{
 	int			initial_source_line;
 	int			branch;
 	int			call;
+	int			conditional;
 	int			total_sample_count;
 	}asm_data;
 	

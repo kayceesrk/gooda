@@ -539,6 +539,7 @@ find_load_addr(char* this_path)
 #ifdef DBUG
 	fprintf(stderr," entring find_load_addr for module %s\n",this_path);
 #endif
+	bin_type = 0;
 //      strip off module name and create ./binaries/module_name string
 	module_len = strlen(this_path);
 	i = module_len;
@@ -556,13 +557,12 @@ find_load_addr(char* this_path)
 	local_name[local_bin_len + len] = '\0';
 #ifdef DBUG
 	fprintf(stderr," find_load_addr local_name for module %s, len = %d, module_len = %d\n",local_name,len,module_len);
-	fprintf(stderr," find_load_addr local_name for module %s\n",local_name);
 #endif
 	access_status = access(local_name, R_OK);
 	if(access_status == 0)
 		{
 #ifdef DBUG
-		fprintf(stderr," find_load_addr found local_name %s\n",local_name);
+		fprintf(stderr," find_load_addr found local_name %s access_status = 0\n",local_name);
 #endif
 		fd = open(local_name, O_RDONLY);
 		if (fd == -1)
@@ -655,9 +655,13 @@ bind_mmap(mmap_struc_ptr this_mmap)
 #endif
 		this_module->length = this_mmap->len;
 		this_module->starting_ip = find_load_addr(this_module->path);
+		this_module->bin_type = bin_type;
 		this_module->time = this_mmap->time;
 //	put it on the top of the process' module stack and return
-
+#ifdef DBUG
+		fprintf(stderr,"module path = %s, starting_ip = 0x%"PRIx64", mmap addr = 0x%"PRIx64", len = 0x%"PRIx64"\n",
+			this_module->path,this_module->starting_ip,this_mmap->addr,this_module->length);
+#endif
 		if(this_process->first_module != NULL) this_process->first_module->previous = this_module;
 		this_module->next = this_process->first_module;
 		this_process->first_module = this_module;
@@ -762,12 +766,15 @@ insert_mmap(mm_struc_ptr this_mm, char* filename, uint64_t new_time)
 		this_struc->addr = this_mm->addr;
 		this_struc->len = this_mm->len;
 //	stupid fixup for [kernel.kallsyms]_stext
-		if(this_struc->addr == 0)
+		if(strcmp(filename,kernel) == 0)
 			{
 			kern_mmap = 1;
-			this_struc->addr = this_mm->pgoff;
+			if(this_struc->addr == 0)
+				{
+				this_struc->addr = this_mm->pgoff;
+				this_struc->len = this_mm->len - this_mm->pgoff;
+				}
 			base_kern_address = this_struc->addr;
-			this_struc->len = this_mm->len - this_mm->pgoff;
 #ifdef DBUG
 			fprintf(stderr,"fixup for kernel_kallsysms, old len = 0x%"PRIx64", new len = 0x%"PRIx64", pgoff = 0x%"PRIx64", addr = 0x%"PRIx64"\n",
 				this_mm->len, this_struc->len, this_mm->pgoff, this_struc->addr);
@@ -1077,6 +1084,7 @@ insert_comm(comm_struc_ptr local_comm)
 		this_process->next = process_stack;
 		process_stack = this_process;
 		this_process->pid = local_comm->pid;
+		this_process->tid_main = local_comm->tid;
 #ifdef DBUG
 		fprintf(stderr," change process_stack old_pid = %d, new_pid =%d\n",process_stack->pid,this_process->pid);
 //		fprintf(stderr,"kernel_mmap filename = %s, kernel_mmap filename address = %lp\n",kernel_mmap->filename,kernel_mmap->filename);
@@ -1091,12 +1099,16 @@ insert_comm(comm_struc_ptr local_comm)
 //		fprintf(stderr," base_thread->sample_count address = %lp\n",base_thread->sample_count);
 #endif
 		}
-//	if this was not a new process then it is just a process rename, or the records were out of order and an mmap record showed up first
-//	fprintf(stderr," existing this_process in  insert_comm, pid = %d, new name = %s, old name = %s\n",local_comm->pid, local_comm->name,this_process->name);
-	this_process->name = local_comm->name;
+//	if this was not a new process then it is just a process or thread rename, 
+//	or the records were out of order and an mmap record showed up first
+//	fprintf(stderr," existing this_process in  insert_comm, pid = %d, tid = %d, new name = %s, old name = %s\n",local_comm->pid, local_comm->tid, local_comm->name,this_process->name);
+	if(local_comm->tid == this_process->tid_main)
+		this_process->name = local_comm->name;
 #ifdef DBUG
-	fprintf(stderr," have this_process in  insert_comm, pid = %d, name = %s\n",local_comm->pid, local_comm->name);
-	fprintf(stderr," process pid = %d, first_mmap path address = %p\n",this_process->pid, this_process->first_mmap->filename);
+	fprintf(stderr," have this_process in  insert_comm, pid = %d, tid = %d, name = %s\n",
+		local_comm->pid, local_comm->tid, local_comm->name);
+	fprintf(stderr," process pid = %d, tid_main = %d, first_mmap path address = %p\n",
+		this_process->pid, this_process->tid_main, this_process->first_mmap->filename);
 	fprintf(stderr," process pid = %d, first_mmap path = %s\n",this_process->pid, this_process->first_mmap->filename);
 	fprintf(stderr," process pid = %d, filename = %s, first_mmap path = %s\n",this_process->pid, this_process->name, this_process->first_mmap->filename);
 //		fprintf(stderr,"kernel_mmap filename = %s, kernel_mmap filename address = %lp\n",kernel_mmap->filename,kernel_mmap->filename);
@@ -1526,6 +1538,8 @@ increment_module_struc(uint32_t pid, uint32_t tid, uint64_t ip, int this_event, 
 	fprintf(stderr,"past stack popping\n");
 #endif
 
+	rva = ip - this_mmap->addr + this_module->starting_ip;
+/*
 	if(this_mmap->addr != four_hundredK)
 		{
 		rva1 = ip - this_mmap->addr;
@@ -1535,7 +1549,6 @@ increment_module_struc(uint32_t pid, uint32_t tid, uint64_t ip, int this_event, 
 		rva1 = ip;
 		}
 
-	rva = ip - this_mmap->addr + this_module->starting_ip;
 
 	if((rva1 != rva) && (print_rva < max_print))
 		{
@@ -1543,6 +1556,7 @@ increment_module_struc(uint32_t pid, uint32_t tid, uint64_t ip, int this_event, 
 			ip,rva1,rva,this_mmap->addr, this_module->starting_ip);
 		print_rva++;
 		}
+*/
 	val = (double) (rva & 0x7FFFFFFF);
 
 	if(this_module->this_table == NULL)
@@ -1683,6 +1697,9 @@ increment_return(mmap_struc_ptr this_mmap, uint64_t source, uint64_t destination
 	principal_process->sample_count[source_index]++;
 	global_sample_count[source_index]++;
 
+	rva = source - this_mmap->addr + this_module->starting_ip;
+	target_rva = destination - target_mmap->addr + target_module->starting_ip;
+/*
 	if(this_mmap->addr != four_hundredK)
 		{
 		rva1 = source - this_mmap->addr;
@@ -1691,8 +1708,6 @@ increment_return(mmap_struc_ptr this_mmap, uint64_t source, uint64_t destination
 		{
 		rva1 = source;
 		}
-	rva = source - this_mmap->addr + this_module->starting_ip;
-	target_rva = destination - target_mmap->addr + target_module->starting_ip;
 
 	if((rva1 != rva) && (print_rva < max_print))
 		{
@@ -1700,6 +1715,7 @@ increment_return(mmap_struc_ptr this_mmap, uint64_t source, uint64_t destination
 			source,rva1,rva,this_mmap->addr, this_module->starting_ip);
 		print_rva++;
 		}
+*/
 	val = (double) (rva & 0x7FFFFFFF);
 
 	if(this_module->this_table == NULL)
@@ -1891,6 +1907,9 @@ increment_call_site(mmap_struc_ptr source_mmap, uint64_t source, uint64_t destin
 	principal_process->sample_count[target_index]++;
 	global_sample_count[target_index]++;
 
+	rva = destination - this_mmap->addr + this_module->starting_ip;
+	source_rva = source - source_mmap->addr + source_module->starting_ip;
+/*
 	if(this_mmap->addr != four_hundredK)
 		{
 		rva1 = destination - this_mmap->addr;
@@ -1899,8 +1918,6 @@ increment_call_site(mmap_struc_ptr source_mmap, uint64_t source, uint64_t destin
 		{
 		rva1 = destination;
 		}
-	rva = destination - this_mmap->addr + this_module->starting_ip;
-	source_rva = source - source_mmap->addr + source_module->starting_ip;
 
 	if((rva1 != rva) && (print_rva < max_print))
 		{
@@ -1908,6 +1925,7 @@ increment_call_site(mmap_struc_ptr source_mmap, uint64_t source, uint64_t destin
 			destination,rva1,rva,this_mmap->addr, this_module->starting_ip);
 		print_rva++;
 		}
+*/
 	val = (double) (rva & 0x7FFFFFFF);
 
 	if(this_module->this_table == NULL)

@@ -44,6 +44,7 @@ limitations under the License.
 #include "gooda_util.h"
 #include "asm_2_src.h"
 
+
 int reorder_module(process_struc_ptr this_process);
 int reorder_rva(module_struc_ptr this_module, process_struc_ptr this_process);
 void function_accumulate(module_struc_ptr this_module, process_struc_ptr this_process);
@@ -66,12 +67,36 @@ typedef struct linkpairs_struc{
 	int		index;
 	}linkpairs_data;
 
+typedef struct branch_type_struc{
+	int branch;
+	int call;
+	int conditional;
+	int ret;
+	int indirect_call;
+	int indirect_jmp;
+	}branch_type_data;
+
+static struct branch_type_struc branch_type;
+
+// simple string to hash index
+int
+hash_index(char* str, int table_size)
+{
+	int i,j,k,len,index;
+	uint64_t sum=0;
+
+	len = strlen(str);
+	for(i=0; i<len; i++)sum += i*str[i];
+	index = sum % table_size;
+	return index;
+}
+
 //    hex_to_ll
 uint64_t 
 hex_to_ll(char* s)
 {
         int len, i,j, mult, hex_base = 16;
-        uint64_t val, badval = 0xFFFFFFFFFFFFFFFF;
+        uint64_t val, badval = 0xFFFFFFFFFFFFFFFFULL;
 
         val = 0;
         mult = 1;
@@ -939,15 +964,171 @@ reorder_rva(module_struc_ptr this_module, process_struc_ptr this_process)
 	return sample_sum;
 }
 
+void
+PPC_elf_fix(char * local_path, function_loc_data * func_data_buffer, int num_func_in_file )
+{
+	int i,j,k;
+	int local_len,ppc_cmd1_len;
+	int ppc_line_count,data_line_count,redirect_count;
+	FILE *fileppc;
+	char line_buf[1024], pntr_field[20],addr_field[20];
+	int line_buf_len, buf_len;
+	char ppc_cmd1[] = "readelf -x .opd ";
+	char *ppc_cmd, *endpntr;
+	typedef struct redirect_struc * redirect_struc_ptr;
+	typedef struct redirect_struc {
+		redirect_struc_ptr	next;
+		redirect_struc_ptr	previous;
+		uint64_t		pntr;
+		uint64_t		address;
+		} redirect_data;
+	redirect_struc_ptr redirect_stack, this_redirect, redirect_array;
+	uint64_t new_base, base_redirect, last_redirect;
+
+	local_len = strlen(local_path);
+	ppc_cmd1_len = strlen(ppc_cmd1);
+	line_buf_len = strlen(line_buf);
+
+//		ppc_cmd = malloc(ppc_cmd1_len + ppc_cmd2_len + ppc_cmd3_len + local_len + sizeof(uint64_t) + 2);
+	ppc_cmd = malloc(ppc_cmd1_len + local_len + 2);
+	if(ppc_cmd == NULL)
+		err(1, "failed to malloc buffer for ppc_cmd");
+	sprintf(ppc_cmd,"%s%s\0",ppc_cmd1,local_path);
+#ifdef DBUG
+	fprintf(stderr," ppc_cmd = %s\n",ppc_cmd);
+#endif
+	fileppc = popen(ppc_cmd, "r");
+//	fprintf(stderr," returned from popen, fileppc = %ld\n",(uint64_t)fileppc);
+	ppc_line_count = 0;
+	data_line_count = 0;
+	redirect_count = 0;
+	redirect_stack = NULL;
+	while(fgets(line_buf,line_buf_len,fileppc) != NULL)
+		{
+		buf_len = strlen(line_buf);
+		if(buf_len != 66)continue;
+		ppc_line_count++;
+#ifdef DBUG
+		fprintf(stderr," readelf -x len = %d, line_count = %d, line = %s",buf_len,ppc_line_count,line_buf);
+#endif
+//			skip first 2 lines
+//		if(ppc_line_count < 3)continue;
+
+		data_line_count++;
+//			skip every third line as they have no address data
+		if(data_line_count == 3)data_line_count = 0;
+		if(data_line_count == 0)continue;
+
+		i = 2;
+		while(line_buf[i] != ' ')
+			{
+			pntr_field[i-2] = line_buf[i];
+			i++;
+			}
+		pntr_field[i-1] = '\0';
+
+		i++;
+//		decode the data fields, keeping only the first of the triplet which has the address
+//		there are 2 data fields per line so there is an alternating pattern of which to keep
+		if(data_line_count == 2) i += 18;
+		k = 0;
+		for(j=0; j<17; j++)
+			if(line_buf[i+j] != ' ')
+				{
+				addr_field[k] = line_buf[i+j];
+				k++;
+				}
+		addr_field[k] = '\0';
+//		fprintf(stderr,"pntr_field = %s, addr_field = %s, redirect_count = %d\n",
+//			pntr_field, addr_field,redirect_count);
+		redirect_count++;
+//		malloc structure for linked list to keep pntr_field and addr_field
+		this_redirect = (redirect_struc_ptr)malloc(sizeof(redirect_data));
+		if(this_redirect == NULL)
+			err(1,"malloc of redirect struc failed for struc %d for module %s",redirect_count,local_path);
+		this_redirect->address = strtoll(addr_field,&endpntr,16);
+		this_redirect->pntr = strtoll(pntr_field,&endpntr,16);
+		if(data_line_count == 2)this_redirect->pntr += 8;
+		last_redirect = this_redirect->pntr;
+		this_redirect->next = NULL;
+		this_redirect->previous = NULL;
+#ifdef DBUG
+		fprintf(stderr,"pntr = 0x%"PRIx64", address = 0x%"PRIx64", redirect_count = %d\n",
+			this_redirect->pntr,this_redirect->address,redirect_count);
+#endif
+		if(redirect_stack == NULL)
+			{
+			redirect_stack = this_redirect;
+			base_redirect = this_redirect->pntr;
+			}
+		else
+			{
+			this_redirect->next = redirect_stack;
+			redirect_stack->previous = this_redirect;
+			redirect_stack = this_redirect;
+			}
+		}
+//	fprintf(stderr," finished while loop in PPC_fix, ppc_line_count = %d, data_line_count = %d, redirect_count = %d\n",
+//		 ppc_line_count, data_line_count, redirect_count);
+	redirect_array = (redirect_struc_ptr)malloc(redirect_count*sizeof(redirect_data));
+	if(redirect_array == NULL)
+		err(1,"failed to malloc redirect array of size %d for module %s",redirect_count,local_path);
+	i = 0;
+	while(redirect_stack != NULL)
+		{
+		redirect_array[i].address = redirect_stack->address;
+		redirect_array[i].pntr = redirect_stack->pntr;
+		i++;
+		this_redirect = redirect_stack;
+		redirect_stack = redirect_stack->next;
+		free(this_redirect);
+		}
+
+//	fprintf(stderr,"finished loading array and freeing stack, i = %d, base_redirect = 0x%"PRIx64", last redirect = 0x%"PRIx64"\n",
+//		i,base_redirect,last_redirect);
+
+	for(i=0; i<num_func_in_file; i++)
+		{
+		k = func_data_buffer[i].base - base_redirect;
+		j = k/24;
+		j = redirect_count - j - 1;
+		if(j < 0)j = 0;
+		if(j > redirect_count-1)j= redirect_count-1;
+//		fprintf(stderr," i = %d, j = %d, k = %d, func_data_buffer[i].base = 0x%"PRIx64"\n",
+//			i,j,k,func_data_buffer[i].base);
+		if(func_data_buffer[i].base > last_redirect)continue;
+		new_base = redirect_array[j].address;
+		if(redirect_array[j].pntr != func_data_buffer[i].base)
+			{
+#ifdef DBUG
+			fprintf(stderr,"bad redirect for module %s, i = %d base = 0x%"PRIx64", name = %s ",
+			local_path,i,func_data_buffer[i].base,func_data_buffer[i].name);
+			fprintf(stderr," j = %d, redirect_pntr = 0x%"PRIx64", addr = 0x%"PRIx64"\n",
+			j,redirect_array[j].pntr,redirect_array[j].address);
+#endif
+//			err(1,"bad redirect pntr");
+			}
+		else
+			{
+
+#ifdef DBUG
+//			fprintf(stderr," new_base = 0x%lx\n",new_base);
+#endif
+			func_data_buffer[i].base = new_base;
+			}
+//	fclose(fileppc);
+		}
+}
 
 functionlist_struc_ptr 
 get_functionlist(module_struc_ptr this_module)
 {
 	char line_buf[1024], local_bin_dir[] = "./binaries/",  cmd[] = "readelf -s -W ", FUNC[] = "FUNC";
+	char *endptr;
 	char demangle[] = "c++filt ";
 	char field[9][1024], space = ' ', colon = ':';
 	char *full_path_cmd, *funcname, *local_name, *local_cmd, *funcname_cmd;
-	uint64_t first_ip, previous_func_ip, previous_func_end;
+	uint64_t first_ip, previous_func_ip, previous_func_end, new_base;
 	function_loc_data * func_data_buffer, *cleaned_func_data_buffer;
 	functionlist_struc_ptr this_functionlist;
 	function_location_stack_ptr function_loc_stack, this_location;
@@ -957,11 +1138,16 @@ get_functionlist(module_struc_ptr this_module)
 	FILE *file, *filt;
 	int access_status;
 	int line_buf_len, buf_len, local_flag,free_count, func_count,len_sum = 0;
+	int ppc_cmd1_len, ppc_cmd2_len, ppc_cmd3_len;
 
 	num_func_in_file = 0;
 	num_func = 0;
 	function_loc_stack = NULL;
 	local_flag = 0;
+	local_len = strlen(local_bin_dir);
+	cmd_len = strlen(cmd);
+	demangle_len = strlen(demangle);
+
 	if(first_module != 2)first_module = 1;
 
 //	strip off module length and create module name string
@@ -980,13 +1166,13 @@ get_functionlist(module_struc_ptr this_module)
 #ifdef DBUG
 	fprintf(stderr," module name = %s\n",this_module->module_name);
 #endif
-/*
-	if((strcmp(this_module->module_name,"triad_inl_g") == 0) && (first_module == 1))
+
+	if((strcmp(this_module->module_name,"triad") == 0) && (first_module == 1))
 		{
 		first_module = 0;
-		fprintf(stderr,"this is triad_inl_g\n");
+		fprintf(stderr,"this is triad\n");
 		}
-*/
+
 //	check local bin directory first
 	local_name = (char*)malloc(local_len + module_name_len + 1);
 	if(local_name == NULL)
@@ -1130,10 +1316,13 @@ get_functionlist(module_struc_ptr this_module)
 		num_func_in_file++;
 
 		this_location = function_location_stack_create();
+		if(this_location == NULL)
+			err(1,"failed to create function_location struc in get_functionlist");
 		this_location->next = function_loc_stack;
 		if(function_loc_stack != NULL) function_loc_stack->previous = this_location;
 		function_loc_stack = this_location;
 		this_location->base = hex_to_ll(field[1]);
+		this_location->base = (this_location->base & addr_mask);
 		this_location->len = func_len;
 
 		funcname_len = strlen(field[7]);
@@ -1177,21 +1366,29 @@ get_functionlist(module_struc_ptr this_module)
 		}
 	this_location = function_loc_stack;
 	i = 0;
+//	fprintf(stderr," READELF -s -W output for FUNC in %s\n",this_module->local_path);
 	while(this_location != NULL)
 		{
 		func_data_buffer[i].name = this_location->name;	
 		func_data_buffer[i].bind = this_location->bind;	
 		func_data_buffer[i].base = this_location->base;	
 		func_data_buffer[i].len = this_location->len;	
+//		fprintf(stderr,"i = %d base = 0x%"PRIx64", len = 0x%"PRIx64", name = %s\n",
+//			i,func_data_buffer[i].base,func_data_buffer[i].len,func_data_buffer[i].name);
 		i++;
 		this_location = this_location->next;
 		}
+
+//		fix up of this_location->base needed for PPC64
+	if((arch_type_flag == 2) && (this_module->bin_type = 64))
+		PPC_elf_fix(this_module->local_path, func_data_buffer,num_func_in_file);
+
 #ifdef DBUG
-		fprintf(stderr," calling quicksort_loc for module %s\n",this_module->path);
+	fprintf(stderr," calling quicksort_loc for module %s\n",this_module->path);
 #endif
 	quickSort_loc(func_data_buffer,num_func_in_file);
 //	walk through the sorted list and do not copy entries where base < base_prev+len_prev
-	cleaned_func_data_buffer = (function_loc_data*)malloc(num_func_in_file*sizeof(function_loc_data));
+	cleaned_func_data_buffer = (function_loc_data*)calloc(1, num_func_in_file*sizeof(function_loc_data));
 	if(cleaned_func_data_buffer == NULL)
 		{
 		fprintf(stderr," failed to malloc buffer for cleaned_func_data_buffer, module path = %s\n",this_module->path);
@@ -1459,6 +1656,7 @@ function_accumulate(module_struc_ptr this_module, process_struc_ptr this_process
 				}
 			this_list[i].this_function = this_function;
 			this_function->function_name = this_list[i].name;
+			this_function->function_mangled_name = this_list[i].name;
 			this_function->function_length = this_list[i].len;
 			this_function->function_rva_start = this_list[i].base;
 			this_function->first_rva = loop_sample;
@@ -1646,7 +1844,8 @@ sort_global_func_list(void)
 				}
 			for(j=0; j<funcname_len; j++)this_function->function_name[j] = new_name[j];
 			this_function->function_name[funcname_len] = '\0';
-			free(old_name);
+//		save mangled name
+//			free(old_name);
 			}
 		free(new_name);
 		i--;
@@ -2410,6 +2609,427 @@ hotspot_call_graph(pointer_data * global_func_list)
 	free(node_list);
 	return;
 }
+void
+ppc64_branch_function(char* field2)
+{
+	char *endptr;
+	int instruction_len;
+	uint32_t instruction_val;
+	uint32_t base, AA, LK, XL;
+	int ibm_inst_len = 32;
+//	uint32_t aa_mask = 0x80000000;
+//	uint32_t lk_mask = 0x40000000;
+//	uint32_t base_mask = 0x3F;
+//	uint32_t xl_form_mask = 0x7FE00000;
+	uint32_t aa_mask = 0x2;
+	uint32_t lk_mask = 0x1;
+	uint32_t base_mask = 0xFC000000;
+	uint32_t xl_form_mask = 0x7FE;
+	uint32_t ret_val = 16, ind_val = 2528;
+	uint32_t ret_encode = 0x4E800000, ret_mask = 0xFFFF0000;
+
+	branch_type.branch = 0;
+	branch_type.call = 0;
+	branch_type.ret = 0;
+	branch_type.conditional = 0;
+	branch_type.indirect_call = 0;
+	branch_type.indirect_jmp = 0;
+
+	instruction_len = strlen(field2);
+//	fprintf(stderr," encoded instruction length = %d\n",instruction_len);
+//	if(instruction_len != ibm_inst_len)return;
+
+	instruction_val = (uint32_t)strtoll(field2, &endptr, 16);
+	base = ((base_mask & instruction_val) >> 26);
+	AA = aa_mask & instruction_val;
+	LK = lk_mask & instruction_val;
+	XL = ((xl_form_mask & instruction_val) >> 1);
+//	fprintf(stderr," inst_val = 0x%x, base = 0x%x, AA = 0x%x, AK = 0x%x, XL = 0x%x\n",
+//		instruction_val,base,AA,LK,XL);	
+
+	if((base == 16) && (LK == 0))
+		{
+		branch_type.branch = 2;
+		branch_type.conditional = 1;
+		return;
+		}
+
+	if((base == 18) && (LK == 0))
+		{
+		branch_type.branch = 2;
+		return;
+		}
+
+	if((base == 16) && (LK != 0))
+		{
+		branch_type.branch = 2;
+		branch_type.conditional = 1;
+		branch_type.call = 1;
+		return;
+		}
+
+	if((base == 18) && (LK != 0))
+		{
+		branch_type.branch = 2;
+		branch_type.call = 1;
+		return;
+		}
+
+	if((instruction_val & ret_mask) == ret_encode)
+		{
+		branch_type.branch = 2;
+		branch_type.ret = 1;
+		return;
+		}
+	if((base == 19) && (XL == 16))
+		{
+		branch_type.branch = 2;
+		branch_type.call = 1;
+		branch_type.indirect_call = 1;
+		return;
+		}
+
+	if((base == 19) && (XL == 528))
+		{
+		branch_type.branch = 2;
+		branch_type.indirect_jmp = 1;
+		return;
+		}
+}
+void
+arm32_branch_function(char* field2)
+{
+	int instruction_len;
+	branch_type.branch = 0;
+	branch_type.call = 0;
+	branch_type.conditional = 0;
+	branch_type.indirect_call = 0;
+	branch_type.indirect_jmp = 0;
+
+	instruction_len = strlen(field2);
+//	fprintf(stderr," encoded instruction length = %d\n",instruction_len);
+
+	if(instruction_len == 4)
+		{
+	// ARM ARM A8.8.18
+	// B branches
+	// B (T1 encoding -	16-bit [1101|xxxx|xxxx|xxxx] == [d|x|x|x])
+	// B (T2 encoding -	16-bit [1110|0xxx|xxxx|xxxx] == [e|<8|x|x])
+		if (field2[0] == 'd')
+			{
+				  branch_type.branch = 2; /* why 2? */
+				  branch_type.conditional = 1; 
+			}
+
+		if ( (field2[0] == 'e' ) && (field2[1] - '0') < 8)
+			{
+			  // B branches
+				  branch_type.branch = 2; /* why 2? */
+			}
+//	fprintf(stderr,"test 1 branch_type.branch = %d\n",branch_type.branch);
+
+	// ARM ARM A8.8.29
+	// CBZ/CBNZ compare and branch
+	// (T1 encoding - 16-bit [1011|x0x1|xxxx|xxxx])
+		if ( ( (field2[0] == 'b' ) && ( ( ((field2[1] - '0') >= 1) && ( (field2[1] - '0') <= 3)) || ( (field2[1] - '0') == 9 ) ) ) ||
+		     ( (field2[0] == 'b' ) &&  ( (field2[1] - 'a') == 1) )
+			) 
+			{
+		 // CBZ/CBNZ branches
+			 branch_type.branch = 2;
+			}
+//	fprintf(stderr,"test 2 branch_type.branch = %d\n",branch_type.branch);
+
+	// ARM ARM A8.8.27 & A8.8.28    
+	// BX/BXJ branch and exchange
+	// BX  (T1 encoding - 16-bit [0100|0111|0xxx|xxxx])
+	// BXJ (T1 encoding - 16-bit [1111|0011|1100|xxxx])
+		if (( (field2[0] == '4') && (field2[1] == '7') && ( (field2[3] - '0') < 8 ) ) ||
+			 ( (field2[0] == 'f') && (field2[1] == '3') && (field2[3] == 'c'))
+			) 
+			{
+		 // BX/BXJ branches
+			 branch_type.branch = 2;
+			}
+//	fprintf(stderr,"test 3 branch_type.branch = %d\n",branch_type.branch);
+
+	// BLX reg (T1 encoding 16-bit [0100|0111|1xxx|xxxx])
+		if ((field2[0] == '4' && (field2[1] < '8' && field2[1] >= '0') && ( (field2[2] - '0' == 8) && (field2[2] - '0' == 9)  ) ) ||
+		    (field2[0] == '4' && (field2[1] < '8' && field2[1] >= '0') && ( (field2[2] - 'a' >= 0) && (field2[2] - 'a' <= 5)  ) ) 
+			)
+			{
+			 branch_type.call = 1;
+			 branch_type.branch = 2;
+			}
+//	fprintf(stderr,"test 6 branch_type.branch = %d\n",branch_type.branch);
+		}
+	if(instruction_len == 8)
+		{
+		if(
+	// B (T3/T4 encoding - 16+16-bit [1111|0xxx|xxxx|xxxx][10xx|xxxx|xxxx|xxxx])
+	// B (A1 encoding -	32-bit [xxxx|1010|xxxx|xxxx|xxxx|xxxx|xxxx|xxxx])
+			 ( (field2[0] == 'f') && ( (field2[1] -'0') < 8) && ( (field2[4] - '0') == 8 || (field2[4] - '0') == 9)) ||
+			 ( (field2[0] == 'f') && ( (field2[1] -'0') < 8) && ( (field2[4] - 'a') == 0 || (field2[4] - 'a') == 1)) ||
+			 (field2[1] == 'a') ||
+	// BX  (A1 encoding - 32-bit [xxxx|0001|0010|xxxx|xxxx|xxxx|0001|xxxx])
+	// BXJ (A1 encoding - 16-bit [xxxx|0001|0010|xxxx|xxxx|xxxx|0010|xxxx])
+			 ( (field2[1] == '1') && (field2[3] == '2' ) && ( (field2[6] == '1') || (field2[6] == '2') ) ) || 
+	// BLX reg (A1 encoding 32-bit [xxxx|0001|0010|xxxx|xxxx|xxxx|0011|xxxx])
+			 (field2[1] == '1' && field2[2] == '2' && field2[6] == '3') || 
+
+	// ARM ARM A8.8.236
+	// TBB/TBH table branch
+	// TBB/TBH (T1 encoding 16+16-bit [1110|1000|1101|xxxx][xxxx|xxxx|000x|xxxx])
+			( (field2[0] == 'e') && (field2[1] == '8') && (field2[3] == 'd') && ( (field2[6] == '0') ||  (field2[6] == '1') ) )
+			)
+			{
+			 branch_type.branch = 2;
+			}
+//	fprintf(stderr,"test 4 branch_type.branch = %d\n",branch_type.branch);
+
+	// ARM ARM A8.8.26
+	// ARM ARM A8.8.25
+	// BL/BLX calls
+	// BL/BLX (T1 encoding 16+16-bit [1111|0xxx|xxxx|xxxx][11x1|xxxx|xxxx|xxxx])
+	// BL/BLX (T2 encoding 16+16-bit [1111|0xxx|xxxx|xxxx][11x0|xxxx|xxxx|xxxx])
+	// BL  (A1 encoding 32-bit [xxxx|1011|xxxx|xxxx|xxxx|xxxx|xxxx|xxxx])
+	// BLX (A1 encoding 32-bit [1111|101x|xxxx|xxxx|xxxx|xxxx|xxxx|xxxx])
+		if ( ( (field2[0] == 'f') && ( (field2[1] - '0') < 8 && field2[1] >= '0') && ( (field2[4] - 'a') >= 4 ) ) ||
+			 (field2[1] == 'b') ||
+			 ( (field2[0] == 'f') && ( (field2[1] == 'a') || (field2[1] == 'b') ) ) 
+			) 
+			{
+			 branch_type.call = 1; /* same question why call = 1? */
+			 branch_type.branch = 2;
+			}
+//	fprintf(stderr,"test 5 branch_type.branch = %d\n",branch_type.branch);
+
+
+		}
+	// ARM ARM A4.3 (for further explanation)
+	// The following are left for completion, as there may be an easier way to extract r15/pc from 
+	// the objdump rather than decoding all instructions of the following types:
+	// @todo handle LDR with PC (r15) as destination
+	// @todo handle LDM with PC (r15) in register list
+	// @todo handle POP with PC (r15) in register list
+	// @todo handle arithmetic ops with PC (r15) as destination 
+	return;
+}
+void
+arm32_branch_function_old(char* field2)
+{
+	int instruction_len;
+	branch_type.branch = 0;
+	branch_type.call = 0;
+	branch_type.conditional = 0;
+	branch_type.indirect_call = 0;
+	branch_type.indirect_jmp = 0;
+
+	instruction_len = strlen(field2);
+	fprintf(stderr," encoded instruction length = %d\n",instruction_len);
+
+	// ARM ARM A8.8.18
+	// B branches
+	// B (T1 encoding -	16-bit [1101|xxxx|xxxx|xxxx] == [d|x|x|x])
+	// B (T2 encoding -	16-bit [1110|0xxx|xxxx|xxxx] == [e|<8|x|x])
+	// B (T3/T4 encoding - 16+16-bit [1111|0xxx|xxxx|xxxx][10xx|xxxx|xxxx|xxxx])
+	// B (A1 encoding -	32-bit [xxxx|1010|xxxx|xxxx|xxxx|xxxx|xxxx|xxxx])
+	if ((field2[0] == 'd') ||
+		 ( (field2[0] == 'e' ) && (field2[1] - '0') < 8) ||
+		 ( (field2[0] == 'f') && ( (field2[1] -'0') < 8) && ( (field2[4] - '0') == 8 || (field2[4] - '0') == 9)) ||
+		 ( (field2[0] == 'f') && ( (field2[1] -'0') < 8) && ( (field2[4] - 'a') == 0 || (field2[4] - 'a') == 1)) ||
+		 (field2[1] == 'a')) {
+			  // B branches
+			  branch_type.branch = 2; /* why 2? */
+	}
+	fprintf(stderr,"test 1 branch_type.branch = %d\n",branch_type.branch);
+
+	// ARM ARM A8.8.29
+	// CBZ/CBNZ compare and branch
+	// (T1 encoding - 16-bit [1011|x0x1|xxxx|xxxx])
+	if ( ( (field2[0] == 'b' ) && ( ( ((field2[1] - '0') >= 1) && ( (field2[1] - '0') <= 3)) || ( (field2[1] - '0') == 9 ) ) ) ||
+	     ( (field2[0] == 'b' ) &&  ( (field2[1] - 'a') == 1) )
+		) {
+		 // CBZ/CBNZ branches
+		 branch_type.branch = 2;
+	}
+	fprintf(stderr,"test 2 branch_type.branch = %d\n",branch_type.branch);
+
+	// ARM ARM A8.8.27 & A8.8.28    
+	// BX/BXJ branch and exchange
+	// BX  (T1 encoding - 16-bit [0100|0111|0xxx|xxxx])
+	// BXJ (T1 encoding - 16-bit [1111|0011|1100|xxxx])
+	// BX  (A1 encoding - 32-bit [xxxx|0001|0010|xxxx|xxxx|xxxx|0001|xxxx])
+	// BXJ (A1 encoding - 16-bit [xxxx|0001|0010|xxxx|xxxx|xxxx|0010|xxxx])
+	if (( (field2[0] == '4') && (field2[1] == '7') && ( (field2[3] - '0') < 8 ) ) ||
+		 ( (field2[0] == 'f') && (field2[1] == '3') && (field2[3] == 'c')) ||
+		 ( (field2[1] == '1') && (field2[3] == '2' ) && ( (field2[6] == '1') || (field2[6] == '2') ) ) ) {
+		 // BX/BXJ branches
+		 branch_type.branch = 2;
+	}
+	fprintf(stderr,"test 3 branch_type.branch = %d\n",branch_type.branch);
+
+	// ARM ARM A8.8.236
+	// TBB/TBH table branch
+	// TBB/TBH (T1 encoding 16+16-bit [1110|1000|1101|xxxx][xxxx|xxxx|000x|xxxx])
+	if ( (field2[0] == 'e') && (field2[1] == '8') && (field2[3] == 'd') && ( (field2[6] == '0') ||  (field2[6] == '1') ) ) {
+		 branch_type.branch = 2;
+	}
+	fprintf(stderr,"test 4 branch_type.branch = %d\n",branch_type.branch);
+
+	// ARM ARM A8.8.25
+	// BL/BLX calls
+	// BL/BLX (T1 encoding 16+16-bit [1111|0xxx|xxxx|xxxx][11x1|xxxx|xxxx|xxxx])
+	// BL/BLX (T2 encoding 16+16-bit [1111|0xxx|xxxx|xxxx][11x0|xxxx|xxxx|xxxx])
+	// BL  (A1 encoding 32-bit [xxxx|1011|xxxx|xxxx|xxxx|xxxx|xxxx|xxxx])
+	// BLX (A1 encoding 32-bit [1111|101x|xxxx|xxxx|xxxx|xxxx|xxxx|xxxx])
+	if ( ( (field2[0] == 'f') && ( (field2[1] - '0') < 8 && field2[1] >= '0') && ( (field2[4] - 'a') >= 4 ) ) ||
+		 (field2[1] == 'b') ||
+		 ( (field2[0] == 'f') && ( (field2[1] == 'a') || (field2[1] == 'b') ) ) 
+		) {
+		 branch_type.call = 1; /* same question why call = 1? */
+		 branch_type.branch = 2;
+	}
+	fprintf(stderr,"test 5 branch_type.branch = %d\n",branch_type.branch);
+
+	// ARM ARM A8.8.26
+	// BLX reg (T1 encoding 16-bit [0100|0111|1xxx|xxxx])
+	// BLX reg (A1 encoding 32-bit [xxxx|0001|0010|xxxx|xxxx|xxxx|0011|xxxx])
+	if ((field2[0] == '4' && (field2[1] < '8' && field2[1] >= '0') && ( (field2[2] - '0' == 8) && (field2[2] - '0' == 9)  ) ) ||
+	    (field2[0] == '4' && (field2[1] < '8' && field2[1] >= '0') && ( (field2[2] - 'a' >= 0) && (field2[2] - 'a' <= 5)  ) ) ||
+		 (field2[1] == '1' && field2[2] == '2' && field2[6] == '3')) {
+		 branch_type.call = 1;
+		 branch_type.branch = 2;
+	}
+	fprintf(stderr,"test 6 branch_type.branch = %d\n",branch_type.branch);
+	// ARM ARM A4.3 (for further explanation)
+	// The following are left for completion, as there may be an easier way to extract r15/pc from 
+	// the objdump rather than decoding all instructions of the following types:
+	// @todo handle LDR with PC (r15) as destination
+	// @todo handle LDM with PC (r15) in register list
+	// @todo handle POP with PC (r15) in register list
+	// @todo handle arithmetic ops with PC (r15) as destination 
+	return;
+}
+int
+arm32_call_identify(char *field2)
+{
+	int call = 0;
+
+	// ARM ARM A8.8.25
+	// BL/BLX calls
+	// BL/BLX (T1 encoding 16+16-bit [1111|0xxx|xxxx|xxxx][11x1|xxxx|xxxx|xxxx])
+	// BL/BLX (T2 encoding 16+16-bit [1111|0xxx|xxxx|xxxx][11x0|xxxx|xxxx|xxxx])
+	// BL  (A1 encoding 32-bit [xxxx|1011|xxxx|xxxx|xxxx|xxxx|xxxx|xxxx])
+	// BLX (A1 encoding 32-bit [1111|101x|xxxx|xxxx|xxxx|xxxx|xxxx|xxxx])
+	if ((field2[0] == 'f' && (field2[1] < '8' && field2[1] >= '0') && field2[4] >= 'c') ||
+		 (field2[1] == 'b') ||
+		 (field2[1] == 'f' && field2[1] >= 'a')) {
+		 call = 1; /* same question why call = 1? */
+	}
+
+	// ARM ARM A8.8.26
+	// BLX reg (T1 encoding 16-bit [0100|0111|1xxx|xxxx])
+	// BLX reg (A1 encoding 32-bit [xxxx|0001|0010|xxxx|xxxx|xxxx|0011|xxxx])
+	if ((field2[0] == '4' && (field2[1] < '8' && field2[1] >= '0') && field2[2] >= '8') ||
+		 (field2[1] == '1' && field2[2] == '2' && field2[6] == '3')) {
+		 call = 1;
+	}
+	return call;
+}
+
+void*
+x86_branch_function(char* field2)
+{
+	int branch,base_char;
+	uint64_t byte_val;
+	char byte_field[3];
+	int modrm=0;
+
+	base_char = 0;
+	branch = 0;
+	byte_val = 0;
+
+	branch_type.branch = 0;
+	branch_type.call = 0;
+	branch_type.conditional = 0;
+	branch_type.indirect_call = 0;
+	branch_type.indirect_jmp = 0;
+
+//	test for mod rm
+	if(
+		((field2[0] == '4') && ((field2[1] - '0') >= 0) && ((field2[base_char+1] - '0') < 10)) ||
+		((field2[0] == '4') && ((field2[1] - 'a') >= 0) && ((field2[base_char+1] - 'a') < 6)) 
+			)base_char=2;
+
+		byte_field[0] = field2[base_char+2];
+		byte_field[1] = field2[base_char+3];
+		byte_field[2] = '\0';
+		byte_val = hex_to_ll(byte_field);
+		byte_val = (byte_val >>3) & 0x7;
+
+//	test for prefixes
+	if(
+		((field2[0] == '6') && (field2[1] == '6'))  ||
+		((field2[0] == 'f') && (field2[1] == '3'))  ||
+		((field2[0] == 'f') && (field2[1] == '2'))  ||
+		((field2[0] == 'f') && (field2[1] == '0'))  ||
+		((field2[0] == '2') && (field2[1] == 'e'))  ||
+		((field2[0] == '3') && (field2[1] == 'e'))  ||
+		((field2[0] == '2') && (field2[1] == '6'))  ||
+		((field2[0] == '6') && (field2[1] == '4'))  ||
+		((field2[0] == '6') && (field2[1] == '5'))  ||
+		((field2[0] == '3') && (field2[1] == '6'))  ||
+		((field2[0] == '6') && (field2[1] == '7')) 
+			)base_char = 2;
+
+	if(
+		((field2[base_char+0] == '0') && (field2[base_char+1] == 'f') && (field2[base_char+2] == '0') && ((field2[base_char+3] == '5') 
+			|| (field2[base_char+3] == '7'))) ||
+		((field2[base_char+0] == '0') && (field2[base_char+1] == 'f') && (field2[base_char+2] == '3') && ((field2[base_char+3] == '4') 
+			|| (field2[base_char+3] == '5'))) ||
+		((field2[base_char+0] == 'c') && ((field2[base_char+1] == '2') || (field2[base_char+1] == '3'))) ||
+		((field2[base_char+0] == 'c') && (((field2[base_char+1] - 'a') >= 0) && ((field2[base_char+1] - 'a') < 6))) ||
+		((field2[base_char+0] == 'e') && 
+			((field2[base_char+1] == '0') || (field2[base_char+1] == '1') || 
+			(field2[base_char+1] == '2')) ) || 
+		((field2[base_char+0] == 'e') && ( (field2[base_char+1] == '9'))) ||
+		((field2[base_char+0] == 'e') && ((field2[base_char+1] == 'a') || (field2[base_char+1] == 'b'))) ||
+		((field2[base_char+0] == 'f') && (field2[base_char+1] == 'f') && ((byte_val >= 4) && (byte_val <= 5 )))
+			) branch_type.branch = 2;
+
+//	conditional
+	if(
+		((field2[base_char+0] == '0') && (field2[base_char+1] == 'f') && (field2[base_char+2] == '8') && (((field2[base_char+3] - '0') >= 0) 
+			&& ((field2[base_char+3] - '0') < 10))) ||
+		((field2[base_char+0] == '0') && (field2[base_char+1] == 'f') && (field2[base_char+2] == '8') && (((field2[base_char+3] - 'a') >= 0) 
+			&& ((field2[base_char+3] - 'a') < 6))) ||
+		((field2[base_char+0] == '7') && (((field2[base_char+1] - '0') >= 0) && ((field2[base_char+1] - '0') < 10))) ||
+		((field2[base_char+0] == '7') && (((field2[base_char+1] - 'a') >= 0) && ((field2[base_char+1] - 'a') < 6))) ||
+		((field2[base_char+0] == 'e') && (field2[base_char+1] == '3') ))
+			{
+			branch_type.branch = 2;
+			branch_type.conditional = 1;
+			}
+
+//	direct calls
+	if(
+		(field2[base_char+0] == 'e') && ((field2[base_char+1] == '8')) ||
+		((field2[base_char+0] == '9') && (field2[base_char+1] == 'a')) ) 
+			{
+			branch_type.branch = 2;
+			branch_type.call = 1;
+			}
+
+//	indirect calls
+	if(
+		((field2[base_char+0] == 'f') && (field2[base_char+1] == 'f') && ((byte_val >= 2) && (byte_val <= 3 ))) )
+			{
+			branch_type.branch = 2;
+			branch_type.call = 2;
+			}
+	return;
+}
 
 int
 x86_branch_identify(char* field2)
@@ -2503,23 +3123,33 @@ x86_call_identify(char* field2)
 	return call;
 }
 
+void
+branch_function_init(void)
+{
+	branch_func_array = (branch_func *) malloc(sizeof(branch_func)*3);
+	branch_func_array[0] = (branch_func) &x86_branch_function;
+	branch_func_array[1] = (branch_func) &arm32_branch_function;
+	branch_func_array[2] = (branch_func) &ppc64_branch_function;
+	return;
+}
+
 int 
 func_asm(pointer_data * global_func_list, int index)
 {
 	int i,j,k,l,kk,tmp, tmp2, line_count, asm_count,hotspot_index;
 	FILE * list, *objout, *dot;
 	char spread[]="./spreadsheets", asmd[]="./spreadsheets/asm/", cfg[]="./spreadsheets/cfg/", src[]="./spreadsheets/src/";
-	char  sheetname[] = "_asm.csv", cfg_name[] = "_cfg.dot", obj1[] = "objdump -d --start-address=0x", obj2[] = " --stop-address=0x";
+	char  sheetname[] = "_asm.csv", cfg_name[] = "_cfg.dot", obj1[] = " -d --start-address=0x", obj2[] = " --stop-address=0x";
 	char svg_name[] = "_cfg.svg", *svg_cmd, *svg_file;
 	char* spreadsheet,* cfg_file;
 	char null_string[] = " null";
 	int null_string_len=5, filename_len, asmd_len, cfg_len, cfg_name_len;
-	char * funcname, *filename, *obj_cmd, line_buf[1024];
+	char * funcname, *filename, *obj_cmd, line_buf[4096];
 	int good_line;
 	char mode[] = "w+";
-	char field1[1024], field2[1024],field3[1024],target_address[80],byte_field[3];
+	char field1[4096], field2[4096],field3[4096],target_address[80],byte_field[3];
 	int base_char, field2_len,field3_len,text_len,bb_text_len;
-	size_t funcname_len, spreadsheet_len = 20, line_buf_len = 1024, buf_len, obj1_len = 29, obj2_len = 18, module_len, asm_len;
+	size_t funcname_len, spreadsheet_len = 20, line_buf_len = 4096, buf_len, obj1_len = 29, obj2_len = 18, module_len, asm_len;
 	function_struc_ptr this_function;
 	module_struc_ptr this_module;
 	process_struc_ptr this_process;
@@ -2530,7 +3160,7 @@ func_asm(pointer_data * global_func_list, int index)
 	float summed_samples, total_samples;
 	size_t base, end;
 	int count, branch, branch_count, call, first_bb, last_bb, bb_count, deadbeef, first_src_bb;
-	uint64_t address, old_address, end_address, *branch_address,byte_val, first_asm=0, last_asm, last_bb_end;
+	uint64_t address, old_address, end_address, *branch_address,byte_val, first_asm=0, last_asm, last_bb_end, this_bb_end;
 	const char * source_file, *source_file_old;
 	int src_file_path_len, ret_val, inline_loop_count;
 	unsigned int line_nr, line_nr_old;
@@ -2640,15 +3270,15 @@ func_asm(pointer_data * global_func_list, int index)
 #endif
 //	create the objdump command for this module and function
 	module_len = strlen(this_function->this_module->local_path);
-	obj_cmd = (char*)malloc((obj1_len + 16 + obj2_len + 16 + module_len +1)*sizeof(char));
+	obj_cmd = (char*)malloc((objdump_len + obj1_len + 16 + obj2_len + 16 + module_len +1)*sizeof(char));
 	if(obj_cmd == NULL)
 		{
 		fprintf(stderr,"failed to malloc obj_cmd for %s, %s\n",filename, this_function->this_module->local_path);
 		err(1,"failed to malloc obj_cmd space");
 		}
 	base = this_function->function_rva_start;
-	end = base + this_function->function_length + 1;
-	sprintf(obj_cmd,"%s%"PRIx64"%s%"PRIx64" %s\0",obj1,base,obj2,end,this_function->this_module->local_path);
+	end = base + this_function->function_length - 1;
+	sprintf(obj_cmd,"%s%s%"PRIx64"%s%"PRIx64" %s\0",objdump_bin,obj1,base,obj2,end,this_function->this_module->local_path);
 #ifdef DBUG
 	fprintf(stderr," obj command = %s\n",obj_cmd);
 #endif
@@ -2663,6 +3293,8 @@ func_asm(pointer_data * global_func_list, int index)
 #ifdef DBUG
 		fprintf(stderr," objdump -d len = %zu, line = %s",buf_len,line_buf);
 #endif
+		if((buf_len + 5) > line_buf_len)
+			fprintf(stderr," very long objdump output len = %zu, line = %s",buf_len,line_buf);
 //		test first few characters to find first line of asm
 //		the following only works with "small" addresses
 //		full 64 bit addresses end up left justified in objdump output
@@ -2699,7 +3331,7 @@ func_asm(pointer_data * global_func_list, int index)
 			}
 		j++;
 #ifdef DBUG
-//			fprintf(stderr," first field = %s\n",field1);
+			fprintf(stderr," first field = %s\n",field1);
 #endif
 //	second field is the encoding
 		k=0;
@@ -2716,7 +3348,7 @@ func_asm(pointer_data * global_func_list, int index)
 		field2[k] = '\0';
 		field2_len = strlen(field2);
 #ifdef DBUG
-//			fprintf(stderr," second field = %s\n",field2);
+			fprintf(stderr," second field = %s\n",field2);
 #endif
 //	third field is the asm
 		k = 0;
@@ -2802,60 +3434,16 @@ func_asm(pointer_data * global_func_list, int index)
 //	check for branch instructions that do not place the target address in the asm text
 //	placed off in function to allow other architectures to be used.
 //	This appears to be the only ISA dependent component of the analysis
-		if((branch != 1) && (field3_len != 0))
-			{
-			branch = x86_branch_identify(field2);
-/*
-                        base_char = 0;
-                        if(
-                        ((field2[0] == '4') && ((field2[1] - '0') >= 0) && ((field2[base_char+1] - '0') < 10)) ||
-                        ((field2[0] == '4') && ((field2[1] - '0') >= 0) && ((field2[base_char+1] - 'a') < 6))
-                        )base_char=2;
-                        byte_field[0] = field2[base_char+2];
-                        byte_field[1] = field2[base_char+3];
-                        byte_field[2] = '\0';
-                        byte_val = hex_to_ll(byte_field);
-                        byte_val = (byte_val >>3) & 0x7;
-
-                        if(
-                        ((field2[base_char+0] == '0') && (field2[base_char+1] == 'f') && (field2[base_char+2] == '0') && ((field2[base_char+3] == '5') || (field2[base_char+3] == '7'))) ||
-                        ((field2[base_char+0] == '0') && (field2[base_char+1] == 'f') && (field2[base_char+2] == '3') && ((field2[base_char+3] == '4') || (field2[base_char+3] == '5'))) ||
-                        ((field2[base_char+0] == '0') && (field2[base_char+1] == 'f') && (field2[base_char+2] == '8') && (((field2[base_char+3] - '0') >= 0) && ((field2[base_char+3] - '0') < 10))) ||
-                        ((field2[base_char+0] == '0') && (field2[base_char+1] == 'f') && (field2[base_char+2] == '8') && (((field2[base_char+3] - 'a') >= 0) && ((field2[base_char+3] - 'a') < 6))) ||
-                        ((field2[base_char+0] == '7') && (((field2[base_char+1] - '0') >= 0) && ((field2[base_char+1] - '0') < 10))) ||
-                        ((field2[base_char+0] == '7') && (((field2[base_char+1] - 'a') >= 0) && ((field2[base_char+1] - 'a') < 6))) ||
-                        ((field2[base_char+0] == 'c') && ((field2[base_char+1] == '2') || (field2[base_char+1] == '3'))) ||
-                        ((field2[base_char+0] == 'c') && (((field2[base_char+1] - 'a') >= 0) && ((field2[base_char+1] - 'a') < 6))) ||
-                        ((field2[base_char+0] == 'e') && ((field2[base_char+1] == '0') || (field2[base_char+1] == '1') || (field2[base_char+1] == '2') || (field2[base_char+1] == '3') )) ||
-                        ((field2[base_char+0] == 'e') && ((field2[base_char+1] == '8') || (field2[base_char+1] == '9'))) ||
-                        ((field2[base_char+0] == 'e') && ((field2[base_char+1] == 'a') || (field2[base_char+1] == 'b'))) ||
-                        ((field2[base_char+0] == '9') && (field2[base_char+1] == 'a')) ||
-                        ((field2[base_char+0] == 'f') && (field2[base_char+1] == 'f') && ((byte_val >= 2) && (byte_val <= 5 )))
-                        ) branch = 2;
-*/
-                        }
-
-                if(branch !=0)
-                        {
-			call = x86_call_identify(field2);
-/*
-                        base_char = 0;
-                        if(
-                        ((field2[0] == '4') && ((field2[1] - '0') >= 0) && ((field2[base_char+1] - '0') < 10)) ||
-                        ((field2[0] == '4') && ((field2[1] - '0') >= 0) && ((field2[base_char+1] - 'a') < 6))
-                        )base_char=2;
-                        byte_field[0] = field2[base_char+2];
-                        byte_field[1] = field2[base_char+3];
-                        byte_field[2] = '\0';
-                        byte_val = hex_to_ll(byte_field);
-                        byte_val = (byte_val >>3) & 0x7;
-                        if(
-                        ((field2[base_char+0] == 'e') && (field2[base_char+1] == '8')) ||
-                        ((field2[base_char+0] == '9') && (field2[base_char+1] == 'a')) ||
-                        ((field2[base_char+0] == 'f') && (field2[base_char+1] == 'f') && ((byte_val >= 2) && (byte_val <= 5 )))
-                        ) call = 1;
-*/
-			}
+		if((field3_len != 0))
+			branch_func_array[arch_type_flag] (field2);
+//			x86_branch_function(field2);
+#ifdef DBUG
+		fprintf(stderr," branch_func: field3_len = %d, field2 = %s, branch = %d, branch_type.branch = %d, branch_type.call = %d, branch_type.conditional = %d\n",
+			field3_len,field2,branch,branch_type.branch,branch_type.call,branch_type.conditional);
+#endif
+		if(branch == 1)branch_type.branch=1;
+		branch = branch_type.branch;
+		call = branch_type.call;
 
 
 //		build asm struc
@@ -2882,6 +3470,7 @@ func_asm(pointer_data * global_func_list, int index)
 		this_asm->address = address;
 		this_asm->branch = branch;
 		this_asm->call = call;
+		this_asm->conditional = branch_type.conditional;
 #ifdef DBUG
 		if(call != 0)
 			fprintf(stderr,"call nonzero %d at address 0x%"PRIx64"\n",call,address);
@@ -3142,13 +3731,25 @@ func_asm(pointer_data * global_func_list, int index)
 //		branch instruction, get address of target
 //		fprintf(stderr," field3 = %s\n",field3);
 #ifdef DBUG
-			fprintf(stderr," field3 = %s\n",field3);
+			fprintf(stderr," field3_len = %d,field3 = %s\n",field3_len,field3);
 #endif
 			j = 0;
-			while(field3[j] != ' ')j++;
+			if(field3[j] == '\t')j++;
+			if(field3[j] == ' ')j++;
+			while((field3[j] != ' ') && (field3[j] != '\t'))j++;
+#ifdef DBUG
+			fprintf(stderr," j after while loop = %d, %c%c\n",j,field3[j],field3[j+1]);
+#endif
+			if(field3[j] == '\t')j++;
 			while(field3[j] == ' ')j++;
+//		fixup for PPC64
+			if(field3[j+1] == 'r')j+=4;
+
 //				start of target address
 			k = 0;
+#ifdef DBUG
+			fprintf(stderr," starting index of target = %d, %c%c\n",j,field3[j],field3[j+1]);
+#endif
 			while((field3[j] != ' ') && (field3[j] != '\0'))
 				{
 				target_address[k] = field3[j];
@@ -3156,10 +3757,15 @@ func_asm(pointer_data * global_func_list, int index)
 				k++;
 				}
 			target_address[k] = '\0';
-//			fprintf(stderr," address =  %s, len = %d, first char = %c\n", target_address,strlen(target_address),target_address[0]);
+#ifdef DBUG
+			fprintf(stderr," address =  %s, len = %ld, first char = %c\n", target_address,strlen(target_address),target_address[0]);
+#endif
 
 			this_asm->target = hex_to_ll(target_address);
-//			fprintf(stderr," address = 0x%"PRIx64", %s\n",this_asm->target, target_address);
+
+#ifdef DBUG
+			fprintf(stderr," address = 0x%"PRIx64", %s\n",this_asm->target, target_address);
+#endif
 			if(this_asm->target == BAD)
 				{
 				fprintf(stderr," bad address returned from hex_to_ll for target_address = %s, at 0x%p\n",target_address,target_address);
@@ -3183,7 +3789,8 @@ func_asm(pointer_data * global_func_list, int index)
 	loop_asm = this_function->first_asm;
 	while(loop_asm != NULL)
 		{
-		fprintf(stderr,"address = 0x%"PRIx64"  %s   %s\n",loop_asm->address,loop_asm->encoding,loop_asm->asm_text);
+		fprintf(stderr,"address = 0x%"PRIx64"  %s   %s   branch = %d, target = 0x%"PRIx64"\n",
+			loop_asm->address,loop_asm->encoding,loop_asm->asm_text, loop_asm->branch, loop_asm->target);
 		loop_asm = loop_asm->next;
 		}
 #endif
@@ -3236,9 +3843,10 @@ func_asm(pointer_data * global_func_list, int index)
 	branch_address[0] = loop_asm->address;
 	if(last_asm < end)
 		{
-		end = last_asm;
-		fprintf(stderr," readelf inconsistent with objdump in function %s, end = 0x%"PRIx64", last_asm = 0x%"PRIx64"\n",
+		if((end-last_asm) > 1)
+			fprintf(stderr," readelf inconsistent with objdump in function %s, end = 0x%"PRIx64", last_asm = 0x%"PRIx64"\n",
 			this_function->function_name,end,last_asm);
+		end = last_asm;
 		}
 	while(j<2*branch_count+1)
 		{
@@ -3359,8 +3967,18 @@ func_asm(pointer_data * global_func_list, int index)
 			}
 
 		while((tmp < last_bb) && (branch_address[tmp] == branch_address[k]))tmp++;
+#ifdef DBUG
+		fprintf(stderr,"bb count = %d, address = 0x%"PRIx64", tmp = %d, branch_address = 0x%"PRIx64"\n",
+			bb_count, this_bb->address, tmp, branch_address[tmp]);
+		if(tmp == last_bb -1)fprintf(stderr," tmp = %d equals last_bb - 1, loop_asm->address = 0x%"PRIx64", end = 0x%"PRIx64"\n",
+				tmp, loop_asm->address, end);
+		if(tmp == last_bb )fprintf(stderr," tmp = %d equals last_bb , loop_asm->address = 0x%"PRIx64", end = 0x%"PRIx64"\n",
+				tmp, loop_asm->address, end);
+#endif
+		this_bb_end = branch_address[tmp];
+		if(tmp == last_bb)this_bb_end = end + 1;
 		this_bb->source_line = loop_asm->principal_source_line;
-		while(loop_asm->address < branch_address[tmp])
+		while(loop_asm->address < this_bb_end)
 			{
 			for(tmp2=0; tmp2 < num_events; tmp2++)
 				this_bb->sample_count[num_events*(num_cores + num_sockets) + tmp2] +=
@@ -3600,9 +4218,12 @@ func_asm(pointer_data * global_func_list, int index)
 				}
 			old_loop_asm = loop_asm;
 			loop_asm = loop_asm->next;
+			if(loop_asm == NULL)break;
 			}
 //		check if last asm is a conditional branch
-		if((old_loop_asm->asm_text[1] == 'j' ) && (old_loop_asm->asm_text[2] != 'm'))
+//		if((old_loop_asm->asm_text[1] == 'j' ) && (old_loop_asm->asm_text[2] != 'm'))
+		if(loop_asm == NULL)loop_asm = old_loop_asm;
+		if(old_loop_asm->conditional == 1)
 			{
 //	bb terminated by conditional branch & has 2 targets
 #ifdef DBUG
@@ -3614,11 +4235,19 @@ func_asm(pointer_data * global_func_list, int index)
 #endif
 			this_bb->target1 = old_loop_asm->target;
 			this_bb->target2 = loop_asm->address;
+#ifdef DBUG
+			fprintf(stderr," 2 targets set for this block, known conditional\n");
+#endif
 			}
 		else if (old_loop_asm->target != 0)
 			{
 			sprintf(this_bb->text," Basic Block %d <0x%"PRIx64">\0",bb_count+1,old_loop_asm->target);
 			this_bb->target1 = old_loop_asm->target;
+#ifdef DBUG
+			fprintf(stderr," 1 target set for this block, known unconditional target = 0x%"PRIx64", branch = %d, addr = 0x%"PRIx64"\n",
+				old_loop_asm->target,old_loop_asm->branch, this_bb->end_address);
+			fprintf(stderr," old_loop_asm_address = 0x%"PRIx64"\n",old_loop_asm->address);
+#endif
 			}
 		else
 			{
@@ -3626,11 +4255,17 @@ func_asm(pointer_data * global_func_list, int index)
 				{
 				sprintf(this_bb->text," Basic Block %d <0x%"PRIx64">\0",bb_count+1,loop_asm->address);
 				this_bb->target2 = loop_asm->address;
+#ifdef DBUG
+			fprintf(stderr," unknown target for this block, target set to next instruction\n");
+#endif
 				}
 			else
 				{
 				sprintf(this_bb->text," Basic Block %d \0",bb_count+1);
 				this_bb->target2 = 0;
+#ifdef DBUG
+			fprintf(stderr," unknown target for last block, target set to 0\n");
+#endif
 				}
 			}
 		if((this_bb->target1 != 0) && ((this_bb->target1 < base) || (this_bb->target1 > end)))deadbeef++;		
@@ -3662,6 +4297,9 @@ func_asm(pointer_data * global_func_list, int index)
 		k = tmp;
 		bb_count++;
 		}
+//	end of loop over BB's
+
+
 //	print out the nodes, with the BB's first
 	this_bb = this_function->first_bb;
 	while(this_bb != NULL)
@@ -4069,12 +4707,14 @@ func_src(pointer_data * global_func_list, int index)
 #ifdef DBUG
 					fprintf(stderr, "new_path=%s\n", new_path);
 #endif
-					free(local_path);
+//					free(local_path);
 					local_path = new_path;
 					}
 			
 			}
 		access_status = access(local_path, R_OK);
+        fprintf(stderr," local path access after path subst = %d, R_OK = %d\n",access_status, R_OK);
+
 		if(access_status !=0)
 			{
 			fprintf(stderr,"cannot find source file %s for function %s, module = %s, only asm will be available\n",
@@ -4084,11 +4724,13 @@ func_src(pointer_data * global_func_list, int index)
 		}
 //	find minimum and maximum principal source file line numbers
 	loop_asm = this_function->first_asm;
+
 #ifdef DBUG
 		fprintf(stderr," this function first asm ptr = %p\n",this_function->first_asm);
 #endif
 	while(loop_asm != NULL)
 		{
+
 #ifdef DBUG
 		fprintf(stderr," this asm file name = %s, line number = %d\n",loop_asm->principal_source_name,loop_asm->principal_source_line);
 #endif
@@ -4108,6 +4750,9 @@ func_src(pointer_data * global_func_list, int index)
 			}
 		loop_asm = loop_asm->next;
 		}
+#ifdef DBUG
+	fprintf(stderr,"finished while loop over asm\n");
+#endif
 	if(first_line_number > last_line_number)
 		{
 		fprintf(stderr,"source line range not found for function %s, file %s\n",this_function->function_name,local_path);
@@ -4194,9 +4839,18 @@ func_src(pointer_data * global_func_list, int index)
 		previous_source_line = this_source_line;
 		}
 	max_src_lines = i;
+	if(max_src_lines == 0)
+		{
+//		really bad debug information line number range beyond end of file
+		fprintf(stderr,"really bad debug information line number range beyond end of file\n");
+		fprintf(stderr," function = %s, first line = %d, last line = %d, source file = %s, len = %d\n",
+		this_function->function_name, first_line_number, last_line_number,local_path,j);
+		fclose(src_file); 
+		return;
+		}
 //	loop over asm structures and increment source line sample count arrays	
 #ifdef DBUG
-	fprintf(stderr," finished reading source file\n");
+	fprintf(stderr," finished reading source file max_src_lines = %d, num_src_lines = %d\n",max_src_lines,num_src_lines);
 #endif
 	loop_asm = this_function->first_asm;
 #ifdef DBUG
@@ -4223,8 +4877,17 @@ func_src(pointer_data * global_func_list, int index)
 #ifdef DBUG
 			fprintf(stderr,"correct principal file, array index = %d\n",i);
 #endif
-			this_source_line = source_line_ptr_array[i];
-			previous_line = loop_asm->principal_source_line;
+			if(i < max_src_lines)
+				{
+				this_source_line = source_line_ptr_array[i];
+				previous_line = loop_asm->principal_source_line;
+				}
+			else
+				{
+				i = previous_line - first_line_number -1;
+				if(i < 0) i = 0;
+				this_source_line = source_line_ptr_array[i];
+				}
 			}
 		else
 			{
@@ -4246,6 +4909,12 @@ func_src(pointer_data * global_func_list, int index)
 				this_source_line->sample_count[source_index] += loop_asm->sample_count[source_index];			
 			if(target_index != 0)
 				this_source_line->sample_count[target_index] += loop_asm->sample_count[target_index];			
+			if(call_index != 0)
+				this_source_line->sample_count[call_index] += loop_asm->sample_count[call_index];
+			if(mispredict_index != 0)
+				this_source_line->sample_count[mispredict_index] += loop_asm->sample_count[mispredict_index];
+			if(indirect_index != 0)
+				this_source_line->sample_count[indirect_index] += loop_asm->sample_count[indirect_index];
 			}
 
 		loop_asm = loop_asm->next;
@@ -4307,8 +4976,9 @@ func_src(pointer_data * global_func_list, int index)
 	for(j=0; j<num_col; j++)fprintf(list," %d,",this_function->sample_count[ global_event_order->order[j].index ]);
 	fprintf(list,"],\n");
 	fprintf(list,"]\n");
-
+	fclose(list);
 }
+
 void * 
 hot_list(pointer_data * global_func_list)
 {
@@ -4463,7 +5133,8 @@ multiplex_correction(void)
 			sum1 += (double)global_sample_count[num_cores*i + j]*global_multiplex_correction[num_cores*i + j];
 			if(j == 2)
 				{
-		fprintf(stderr,"global_multiplex_correction for event %d = %g, sum1 = %g\n",i,global_multiplex_correction[num_cores*i + j], sum1);
+		fprintf(stderr," event = %d, core = %d, sample count = %d\n",i,j,global_sample_count[num_cores*i + j]);
+		fprintf(stderr,"global_multiplex_correction for event %d, core - %d  = %g, sum1 = %g\n",i,j,global_multiplex_correction[num_cores*i + j], sum1);
 				}
 			}
 		global_multiplex_correction[num_events*(num_cores + num_sockets) + i] = 1.0;
