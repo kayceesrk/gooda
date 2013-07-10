@@ -1,4 +1,4 @@
-From bd41e07fcdc3386e88ca40af532b7bc3c61ac04a Mon Sep 17 00:00:00 2001
+From 43111023b3954a98fdcff5df7662e7a53227be7e Mon Sep 17 00:00:00 2001
 From: Stephane Eranian <eranian@google.com>
 Date: Mon, 23 Apr 2012 18:03:28 +0200
 Subject: [PATCH 1/2] perf tools: add support for libpfm4
@@ -25,12 +25,12 @@ Signed-off-by: Stephane Eranian <eranian@google.com>
  tools/perf/Documentation/perf-stat.txt   |    8 ++
  tools/perf/Makefile                      |   10 ++
  tools/perf/builtin-list.c                |   12 ++
- tools/perf/builtin-record.c              |   17 +++
+ tools/perf/builtin-record.c              |   18 +++
  tools/perf/builtin-stat.c                |   17 +++
- tools/perf/config/feature-tests.mak      |   13 ++
+ tools/perf/config/feature-tests.mak      |   15 +-
  tools/perf/util/parse-events.c           |  220 ++++++++++++++++++++++++++++++
  tools/perf/util/parse-events.h           |    5 +
- 9 files changed, 311 insertions(+)
+ 9 files changed, 313 insertions(+), 1 deletion(-)
 
 diff --git a/tools/perf/Documentation/perf-record.txt b/tools/perf/Documentation/perf-record.txt
 index 938e890..f99387f 100644
@@ -72,10 +72,10 @@ index faf4f4f..1b490ad 100644
  -a::
  --all-cpus::
 diff --git a/tools/perf/Makefile b/tools/perf/Makefile
-index ac008b1..409cab8 100644
+index bb74c79..f4260db 100644
 --- a/tools/perf/Makefile
 +++ b/tools/perf/Makefile
-@@ -729,6 +729,16 @@ ifndef NO_GTK2
+@@ -713,6 +713,16 @@ ifndef NO_GTK2
  	endif
  endif
  
@@ -120,7 +120,7 @@ index 1948ece..60ca306 100644
  		print_events(NULL, false);
  	else {
 diff --git a/tools/perf/builtin-record.c b/tools/perf/builtin-record.c
-index 774c907..ce8c5fb 100644
+index f1a939e..6eb373a 100644
 --- a/tools/perf/builtin-record.c
 +++ b/tools/perf/builtin-record.c
 @@ -63,6 +63,10 @@ static void __handle_on_exit_funcs(void)
@@ -134,7 +134,7 @@ index 774c907..ce8c5fb 100644
  enum write_mode_t {
  	WRITE_FORCE,
  	WRITE_APPEND
-@@ -951,6 +955,11 @@ const struct option record_options[] = {
+@@ -953,6 +957,11 @@ const struct option record_options[] = {
  	OPT_CALLBACK('j', "branch-filter", &record.opts.branch_stack,
  		     "branch filter mask", "branch stack filter modes",
  		     parse_branch_stack),
@@ -146,7 +146,7 @@ index 774c907..ce8c5fb 100644
  	OPT_END()
  };
  
-@@ -962,6 +971,14 @@ int cmd_record(int argc, const char **argv, const char *prefix __maybe_unused)
+@@ -964,7 +973,16 @@ int cmd_record(int argc, const char **argv, const char *prefix __maybe_unused)
  	struct perf_record *rec = &record;
  	char errbuf[BUFSIZ];
  
@@ -159,8 +159,10 @@ index 774c907..ce8c5fb 100644
 +#endif
 +
  	evsel_list = perf_evlist__new(NULL, NULL);
++
  	if (evsel_list == NULL)
  		return -ENOMEM;
+ 
 diff --git a/tools/perf/builtin-stat.c b/tools/perf/builtin-stat.c
 index 9984876..10b3d11 100644
 --- a/tools/perf/builtin-stat.c
@@ -204,7 +206,7 @@ index 9984876..10b3d11 100644
  
  	evsel_list = perf_evlist__new(NULL, NULL);
 diff --git a/tools/perf/config/feature-tests.mak b/tools/perf/config/feature-tests.mak
-index 2cc7c6f..276a18f 100644
+index b4eabb4..8f309b7 100644
 --- a/tools/perf/config/feature-tests.mak
 +++ b/tools/perf/config/feature-tests.mak
 @@ -102,6 +102,19 @@ int main(void)
@@ -227,6 +229,13 @@ index 2cc7c6f..276a18f 100644
  ifndef NO_LIBPERL
  define SOURCE_PERL_EMBED
  #include <EXTERN.h>
+@@ -235,4 +248,4 @@ int main(void)
+ 	numa_available();
+ 	return 0;
+ }
+-endef
+\ No newline at end of file
++endef
 diff --git a/tools/perf/util/parse-events.c b/tools/perf/util/parse-events.c
 index c84f48c..acd13b9 100644
 --- a/tools/perf/util/parse-events.c

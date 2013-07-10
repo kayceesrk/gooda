@@ -1,4 +1,4 @@
-From 45f6ac1fdb4cf6a058e1da603bec7c3112b9b92a Mon Sep 17 00:00:00 2001
+From 55069ed169280d5f7eec5bc2fab80e258583f370 Mon Sep 17 00:00:00 2001
 From: Stephane Eranian <eranian@google.com>
 Date: Wed, 16 May 2012 15:44:53 +0200
 Subject: [PATCH 2/2] perf record: enable multplexing correction via -R
@@ -24,8 +24,8 @@ Signed-off-by: Stephane Eranian <eranian@google.com>
  tools/perf/Documentation/perf-record.txt |    2 ++
  tools/perf/util/evlist.c                 |    8 ++++++++
  tools/perf/util/evlist.h                 |    1 +
- tools/perf/util/evsel.c                  |   31 ++++++++++++++++++++++++++----
- 4 files changed, 38 insertions(+), 4 deletions(-)
+ tools/perf/util/evsel.c                  |   33 ++++++++++++++++++++++++++----
+ 4 files changed, 40 insertions(+), 4 deletions(-)
 
 diff --git a/tools/perf/Documentation/perf-record.txt b/tools/perf/Documentation/perf-record.txt
 index f99387f..f3b4989 100644
@@ -41,10 +41,10 @@ index f99387f..f3b4989 100644
  -C::
  --cpu::
 diff --git a/tools/perf/util/evlist.c b/tools/perf/util/evlist.c
-index bc4ad79..4441e6d 100644
+index c8be0fb..3d7c275 100644
 --- a/tools/perf/util/evlist.c
 +++ b/tools/perf/util/evlist.c
-@@ -659,6 +659,14 @@ u64 perf_evlist__sample_type(struct perf_evlist *evlist)
+@@ -658,6 +658,14 @@ u64 perf_evlist__sample_type(struct perf_evlist *evlist)
  	return first->attr.sample_type;
  }
  
@@ -72,10 +72,19 @@ index 2dd07bd..a4babc7 100644
  u16 perf_evlist__id_hdr_size(struct perf_evlist *evlist);
  
 diff --git a/tools/perf/util/evsel.c b/tools/perf/util/evsel.c
-index 9c82f98f..5028473 100644
+index 9c82f98f..4f06a24 100644
 --- a/tools/perf/util/evsel.c
 +++ b/tools/perf/util/evsel.c
-@@ -552,6 +552,8 @@ void perf_evsel__config(struct perf_evsel *evsel,
+@@ -499,6 +499,8 @@ void perf_evsel__config(struct perf_evsel *evsel,
+ 	perf_evsel__set_sample_bit(evsel, IP);
+ 	perf_evsel__set_sample_bit(evsel, TID);
+ 
++	attr->read_format = PERF_FORMAT_TOTAL_TIME_ENABLED |
++			    PERF_FORMAT_TOTAL_TIME_RUNNING;
+ 	/*
+ 	 * We default some events to a 1 default interval. But keep
+ 	 * it a weak assumption overridable by the user.
+@@ -552,6 +554,8 @@ void perf_evsel__config(struct perf_evsel *evsel,
  		perf_evsel__set_sample_bit(evsel, TIME);
  		perf_evsel__set_sample_bit(evsel, RAW);
  		perf_evsel__set_sample_bit(evsel, CPU);
@@ -84,7 +93,7 @@ index 9c82f98f..5028473 100644
  	}
  
  	if (opts->no_delay) {
-@@ -994,6 +996,29 @@ static bool sample_overlap(const union perf_event *event,
+@@ -994,6 +998,29 @@ static bool sample_overlap(const union perf_event *event,
  	return false;
  }
  
@@ -114,7 +123,7 @@ index 9c82f98f..5028473 100644
  int perf_evsel__parse_sample(struct perf_evsel *evsel, union perf_event *event,
  			     struct perf_sample *data)
  {
-@@ -1083,10 +1108,8 @@ int perf_evsel__parse_sample(struct perf_evsel *evsel, union perf_event *event,
+@@ -1083,10 +1110,8 @@ int perf_evsel__parse_sample(struct perf_evsel *evsel, union perf_event *event,
  		array++;
  	}
  

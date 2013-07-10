@@ -1,18 +1,4 @@
 #!/usr/bin/python
-"""Copyright 2012 Google Inc. All Rights Reserved.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License
-"""
 
 """Generate difference spreadsheet of 2 Gooda function_hotspot.csv
 or process.csv files.
@@ -120,7 +106,7 @@ def BuildSpreadsheet(filename):
     if match:
       continue
 
-    list = re.findall(r'"[^, ][^"]*"|[^\[\]," \n]+|(?<=[\[,])(?=[\],])|(?<=[\[,] )(?=[\],])', line)
+    list = re.findall(r'"[^, ][^"]*"|[^\[\]," \n]+|(?<=[\[,])(?=[\],])', line)
     if list[0] != '':
       raise Error("Expected first column to be empty: %s" % line)
     #print list
@@ -187,17 +173,17 @@ def ConvertAndScale(dict, dict2, scale_array,
 
 def ComputeChange(dictA, dictB, dictA2, dictB2,
                   change_dict, change_dict2,
-                  start_col, stop_col):
+                  start_col, stop_col, scale_fact):
   for (k, v) in dictA.iteritems():
     change_dict[k] = copy.deepcopy(dictB[k])
     for i in range(start_col, stop_col + 1):
-      change_dict[k][i] = str(int(change_dict[k][i] - dictA[k][i]))
+      change_dict[k][i] = str(int(change_dict[k][i] - scale_fact*dictA[k][i]))
     if dictA2 and k in dictA2:
       change_dict2[k] = {}
       ComputeChange(dictA2[k], dictB2[k], None, None,
-                    change_dict2[k], None, start_col, stop_col)
+                    change_dict2[k], None, start_col, stop_col,scale_fact)
 
-def CompareDicts(ref_ss, new_ss):
+def CompareDicts(ref_ss, new_ss, scale_fact):
 
   for (k, v) in ref_ss.header_dict.iteritems():
     if k != '"Multiplex"' and v != new_ss.header_dict[k]:
@@ -230,7 +216,7 @@ def CompareDicts(ref_ss, new_ss):
   ComputeChange(ref_ss.entriesL1_dict, new_ss.entriesL1_dict,
                 ref_ss.entriesL2_dict, new_ss.entriesL2_dict,
                 change_dictL1, change_dictL2,
-                start_col, stop_col)
+                start_col, stop_col, scale_fact)
 
   print '['
   for h in ref_ss.header_order:
@@ -250,16 +236,21 @@ def CompareDicts(ref_ss, new_ss):
 
 
 def main():
-  if len(sys.argv) != 3:
-    print 'usage: gooda_diff.py file_ref file_new'
+  if len(sys.argv) < 3:
+    print 'usage: gooda_diff.py file_ref file_new [scale_factor for ref]'
     sys.exit(1)
 
   filename_ref = sys.argv[1]
   filename_new = sys.argv[2]
+  scale_fact = 1.0
+  if len(sys.argv) == 4:
+    scale_fact = float(sys.argv[3])
+
+
 
   ref_ss = BuildSpreadsheet(filename_ref)
   new_ss = BuildSpreadsheet(filename_new)
-  CompareDicts(ref_ss, new_ss)
+  CompareDicts(ref_ss, new_ss, scale_fact)
 
 if __name__ == '__main__':
   main()
