@@ -120,7 +120,7 @@ def BuildSpreadsheet(filename):
     if match:
       continue
 
-    list = re.findall(r'"[^, ][^"]*"|[^\[\]," \n]+|(?<=[\[,])(?=[\],])', line)
+    list = re.findall(r'"[^, ][^"]*"|[^\[\]," \n]+|(?<=[\[,])(?=[\],])|(?<=[\[,] )(?=[\],])', line)
     if list[0] != '':
       raise Error("Expected first column to be empty: %s" % line)
     #print list
@@ -200,6 +200,7 @@ def ComputeChange(dictA, dictB, dictA2, dictB2,
 def CompareDicts(ref_ss, new_ss, scale_fact):
 
   for (k, v) in ref_ss.header_dict.iteritems():
+    #print  ('k = ', k, new_ss.header_dict[k]) 
     if k != '"Multiplex"' and v != new_ss.header_dict[k]:
       raise Error('Header lines not equal: "%s" != "%s"' % (v, new_ss.header_dict[k]))
 
