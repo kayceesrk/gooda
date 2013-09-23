@@ -158,7 +158,6 @@ require(["dijit/layout/BorderContainer",
       this.reportExplorer.containerNode = this.reportExplorer.domNode;
       
       this.navigationMenu.addChild(this.reportExplorer);
-      this.viewport.addChild(this.header);
       this.viewport.addChild(this.navigationMenu);
       this.viewport.addChild(this.container);
       
@@ -179,23 +178,11 @@ require(["dijit/layout/BorderContainer",
     },
     
     loadReport: function(name){
-      try{
-        this.reportStore.newItem({report: name});
-      }catch(err){
-      }
-
       GOoDA.Report.create(name);
     },
 
     unloadReport: function(name){
       var self = this;
-
-      try{
-        this.reportStore.fetchItemByIdentity({identity: name, onItem: function(item){
-            self.reportStore.deleteItem(item);
-        }});
-      }catch(e){
-      }
     },
     
     loadFunction: function(reportName, functionID){

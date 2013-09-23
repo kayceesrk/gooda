@@ -239,14 +239,30 @@ def CompareDicts(ref_ss, new_ss, scale_fact):
 
   globalsample = change_dictL1['\"Global sample breakdown\"']
   del change_dictL1['\"Global sample breakdown\"']
+  globalsample_ref = ref_ss.entriesL1_dict['\"Global sample breakdown\"']
+  globalsample_new = new_ss.entriesL1_dict['\"Global sample breakdown\"']
 
   for key, value in sorted(change_dictL1.iteritems(), key=lambda (k,v): abs(int(v[start_col])), reverse=True):
     PrintCsvLine(value)
     if key in change_dictL2:
       for key2, value2 in sorted(change_dictL2[key].iteritems(), key=lambda (k,v): abs(int(v[start_col])), reverse=True):
         PrintCsvLine(value2)
+    else:
+      ref_ss.entriesL1_dict[key][start_col - 7] = new_ss.entriesL1_dict[key][start_col - 7]
+      for i in range(start_col, stop_col + 1):
+        new_ss.entriesL1_dict[key][i] = str(int(new_ss.entriesL1_dict[key][i]))
+      PrintCsvLine(new_ss.entriesL1_dict[key])
+      for i in range(start_col, stop_col + 1):
+        ref_ss.entriesL1_dict[key][i] = str(int(ref_ss.entriesL1_dict[key][i]))
+      PrintCsvLine(ref_ss.entriesL1_dict[key])
 
-  PrintCsvLine(globalsample, True)
+  PrintCsvLine(globalsample, False)
+  for i in range(start_col, stop_col + 1):
+    globalsample_new[i] = str(int(globalsample_new[i]))
+  PrintCsvLine(globalsample_new, False)
+  for i in range(start_col, stop_col + 1):
+    globalsample_ref[i] = str(int(globalsample_ref[i]))
+  PrintCsvLine(globalsample_ref, True)
   print ']'
 
 

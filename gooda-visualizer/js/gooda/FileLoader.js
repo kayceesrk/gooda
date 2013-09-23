@@ -165,8 +165,19 @@ require(["dojo/_base/declare"], function(declare){
           isEvent: i >= firstEventColumn,
           isHybrid: true,
           maxPercentageLength: 0,
-          expanded: false
+          expanded: false,
+          visible: true
         };
+      }
+
+      // Determine if it's a diff spreadsheet
+      if(data[data.length - 2][1] == "Global sample breakdown"){
+        for(var i = firstColumn; i <= lastEventColumn; i++){
+          convertedData.columns[i - firstColumn].summaryBase = data[data.length - 2][i];
+          convertedData.columns[i - firstColumn].summaryDiff = data[data.length - 3][i];
+        }
+
+        convertedData.isDiff = true;
       }
 
       if(initialize) initialize(convertedData);
@@ -210,18 +221,30 @@ require(["dojo/_base/declare"], function(declare){
       for(var i = 0; i < columns.length; i++){
         var column = columns[i];
 
-        if(column.isEvent) 
+        if(column.isEvent){
           column.summary = Math.round(column.summary*column.multiplex);
-        else 
+
+          if(column.summaryDiff){
+            column.summaryDiff = Math.round(column.summaryDiff*column.multiplex);
+            column.summaryBase = Math.round(column.summaryBase*column.multiplex);
+          }
+        }else{
           column.summary = 0;
+
+          if(column.summaryDiff){
+            column.summaryDiff = 0;
+            column.summaryBase = 0;
+          }
+        }
       }
     },
 
     convertGrid: function(fC, fEC, lEC, data, cData, custom){
       var maxRow = null;
       var maxCycles = 0;
+      var len = cData.isDiff ? data.length - 3 : data.length - 1;
 
-      for(var i = this.FIRST_DATA_ROW; i < data.length - 1; i++){
+      for(var i = this.FIRST_DATA_ROW; i < len; i++){
         var cycles = 0;
         var iRow = data[i];
         var oRow = (cData.grid[i - this.FIRST_DATA_ROW] = {id : i - this.FIRST_DATA_ROW});
@@ -269,11 +292,23 @@ require(["dojo/_base/declare"], function(declare){
 
         switch(column.field){
           case GOoDA.Columns.FUNCTIONNAME:
-            column.summary = this.getBlankString(column.summary, '');
+            if(convertedData.isDiff){
+              column.summary = this.getBlankString(column.summary + 3, "reference");
+              column.summaryDiff = "diff";
+              column.summaryBase = "new";
+            }else
+              column.summary = this.getBlankString(column.summary + 3, '');
+
             break;
             
           case GOoDA.Columns.PROCESSPATH:
-            column.summary = this.getBlankString(column.summary + 3, '');
+            if(convertedData.isDiff){
+              column.summary = this.getBlankString(column.summary + 3, "reference");
+              column.summaryDiff = "diff";
+              column.summaryBase = "new";
+            }else
+              column.summary = this.getBlankString(column.summary + 3, '');
+
             break;
 
           case GOoDA.Columns.ADDRESS:
@@ -340,6 +375,7 @@ require(["dojo/_base/declare"], function(declare){
 
       $.ajax({
         url: file,
+        cache: false,
         dataType: 'text',
         success: success,
         error: error
@@ -367,6 +403,7 @@ require(["dojo/_base/declare"], function(declare){
 
       $.ajax({
         url: file,
+        cache: false,
         dataType: 'text',
         success: function(response, status, xhr){
             success(eval('(' + response + ')'));

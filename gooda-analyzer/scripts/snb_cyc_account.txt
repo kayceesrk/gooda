@@ -13,11 +13,11 @@ dtlb_load_misses:stlb_hit:period=200003
 mem_load_uops_retired:l1_hit:period=2000003:precise=2
 mem_load_uops_retired:hit_lfb:period=200003:precise=2
 mem_load_uops_retired:l2_hit:period=200003:precise=2
-mem_load_uops_llc_hit_retired:xsnp_hit:period=100003:precise=2
-mem_load_uops_llc_hit_retired:xsnp_hitm:period=100003:precise=2
-mem_load_uops_llc_hit_retired:xsnp_miss:period=100003:precise=2
-mem_load_uops_llc_hit_retired:xsnp_none:period=100003:precise=2
-mem_load_uops_misc_retired:llc_miss:period=10007:precise=2
+mem_load_llc_hit_retired:xsnp_hit:period=100003:precise=2
+mem_load_llc_hit_retired:xsnp_hitm:period=100003:precise=2
+mem_load_llc_hit_retired:xsnp_miss:period=100003:precise=2
+mem_load_llc_hit_retired:xsnp_none:period=100003:precise=2
+mem_load_misc_retired:llc_miss:period=10007:precise=2
 load_hit_pre:sw_pf:period=100003
 mem_uops_retired:all_loads:period=2000003
 mem_uops_retired:all_stores:period=2000003
@@ -36,7 +36,7 @@ itlb_misses:walk_completed:period=200003
 itlb_misses:walk_duration:period=2000003
 l2_rqsts:code_rd_hit:period=200003
 l2_rqsts:code_rd_miss:period=100003
-dsb2mite_switches:count:period=2000003
+dsb2mite_switches:penalty_cycles:period=2000003
 idq:ms_uops_cycles:period=2000003
 idq_uops_not_delivered:c=4:period=2000003
 resource_stalls:sb:period=2000003

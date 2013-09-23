@@ -519,28 +519,28 @@ process_table(void)
 		err(1,"failed to open asm listing file");
 		}
 	fprintf(list,"[\n");
-	fprintf(list,"[,\"Process Path\",\"Module Path\",");
+	fprintf(list,"[, \"Process Path\", \"Module Path\",");
 	for(k=0; k < num_col; k++)fprintf(list," \"%s\",",global_event_order->order[k].name);
-	fprintf(list,"],\n");
+	fprintf(list," ],\n");
 	fprintf(list,"[,");
-	fprintf(list,"\"0:0\",\"1:0\",");
-	for(k=0;k<num_col;k++)fprintf(list,"\"%d%s\",",2+global_event_order->order[k].base_col,global_event_order->order[k].ctrl_string);
-	fprintf(list,"],\n");
-	fprintf(list,"[,,\"MSR Programming\",");
+	fprintf(list," \"0:0\", \"1:0\",");
+	for(k=0;k<num_col;k++)fprintf(list," \"%d%s\",",2+global_event_order->order[k].base_col,global_event_order->order[k].ctrl_string);
+	fprintf(list," ],\n");
+	fprintf(list,"[, , \"MSR Programming\",");
 	for(k=0; k < num_col; k++)fprintf(list," 0x%"PRIx64",",global_event_order->order[k].config);
-	fprintf(list,"],\n");
-	fprintf(list,"[,,\"Periods\",");
+	fprintf(list," ],\n");
+	fprintf(list,"[, , \"Periods\",");
 	for(k=0; k < num_col; k++)fprintf(list," %ld,",global_event_order->order[k].Period);
-	fprintf(list,"],\n");
-	fprintf(list,"[,,\"Multiplex\",");
+	fprintf(list," ],\n");
+	fprintf(list,"[, , \"Multiplex\",");
 	for(k=0; k < num_col; k++)fprintf(list," %5.4lf,",global_event_order->order[k].multiplex);
-	fprintf(list,"],\n");
-	fprintf(list,"[,,\"Penalty\",");
+	fprintf(list," ],\n");
+	fprintf(list,"[, , \"Penalty\",");
 	for(k=0; k < num_col; k++)fprintf(list," %d,",global_event_order->order[k].penalty);
-	fprintf(list,"],\n");
-	fprintf(list,"[,,\"Cycles\",");
+	fprintf(list," ],\n");
+	fprintf(list,"[, , \"Cycles\",");
 	for(k=0; k < num_col; k++)fprintf(list," %d,",global_event_order->order[k].cycle);
-	fprintf(list,"],\n");
+	fprintf(list," ],\n");
 //	the data
 	loop_process = principal_process_stack;
 	process_count = 1;
@@ -548,7 +548,7 @@ process_table(void)
 		{
 		if(loop_process->total_sample_count <= 0)break;
 
-		fprintf(list,"[,\"%s\",,",loop_process->name);
+		fprintf(list,"[, \"%s\", ,",loop_process->name);
 #ifdef DBUG
 		fprintf(stderr," calling branch_eval for process %s\n",loop_process->name);
 #endif
@@ -560,7 +560,7 @@ process_table(void)
 #endif
 //		for(j=0; j<num_col; j++)fprintf(list," %d,",loop_process->sample_count[num_events*(num_cores + num_sockets) + global_event_order->order[j].index ]);
 		for(j=0; j<num_col; j++)fprintf(list," %d,",loop_process->sample_count[ global_event_order->order[j].index ]);
-		fprintf(list,"],\n");
+		fprintf(list," ],\n");
 #ifdef DBUG
 		if(process_count == 1)
 			{
@@ -593,10 +593,10 @@ process_table(void)
 					)inst_working_set(loop_module);
 				}
 
-			fprintf(list,"[,,\"%s\",",loop_module->path);
+			fprintf(list,"[, , \"%s\",",loop_module->path);
 			branch_eval(loop_module->sample_count);
 			for(j=0; j<num_col; j++)fprintf(list," %d,",loop_module->sample_count[ global_event_order->order[j].index ]);
-			fprintf(list,"],\n");
+			fprintf(list," ],\n");
 #ifdef DBUG
 			fprintf(stderr," %s has %d events\n",loop_module->path,loop_module->total_sample_count);
 #endif
@@ -605,11 +605,11 @@ process_table(void)
 		loop_process = loop_process->principal_next;
 		process_count++;
 		}
-	fprintf(list,"[,\"Global sample breakdown\",\"all process/modules\",");
+	fprintf(list,"[, \"Global sample breakdown\", \"all process/modules\",");
 //	this has already been called in hotspot_function
 //	branch_eval(global_sample_count);
 	for(j=0; j<num_col; j++)fprintf(list," %d,",global_sample_count[ global_event_order->order[j].index ]);
-	fprintf(list,"]\n");
+	fprintf(list," ]\n");
 	fprintf(list,"]\n");
 	fclose(list);
 //	err(1,"finished process_table");
@@ -1992,40 +1992,40 @@ hotspot_function(pointer_data * global_func_list)
 
 	fprintf(sh,"[\n");
 //	fprintf(sh,"[null,\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",",function_name,offset,length,module,process);
-	fprintf(sh,"[,,,\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",",function_name,offset,length,module,process);
+	fprintf(sh,"[, , , \"%s\", \"%s\", \"%s\", \"%s\", \"%s\",",function_name,offset,length,module,process);
 //	for(i=0; i < num_events; i++)fprintf(sh," \"%s\",",event_list[i].name);
 	for(i=0; i < num_col; i++)fprintf(sh," \"%s\",",global_event_order->order[i].name);
 //	fprintf(sh,"null],\n");
-	fprintf(sh,"],\n");
-	fprintf(sh,"[,,,\"0:4\",");
-	for(k=1;k<5;k++)fprintf(sh,"\"0_%d:0\",",k);
+	fprintf(sh," ],\n");
+	fprintf(sh,"[, , , \"0:4\",");
+	for(k=1;k<5;k++)fprintf(sh," \"0_%d:0\",",k);
 	for(k=0;k<num_col;k++)fprintf(sh,"\"%d%s\",",1+global_event_order->order[k].base_col,global_event_order->order[k].ctrl_string);
-	fprintf(sh,"],\n");
+	fprintf(sh," ],\n");
 //	fprintf(sh,"[null,\"MSR Programmings\",null,null,null,null,");
-	fprintf(sh,"[,,,\"MSR Programmings\",null,null,null,null,");
+	fprintf(sh,"[, , , \"MSR Programmings\", null, null, null, null,");
 //	for(i=0; i < num_events; i++)fprintf(sh," \"0x%"PRIx64"\",",global_attrs[i].attr.config);
 //	for(i=0; i < num_col; i++)fprintf(sh," \"0x%"PRIx64"\",",global_event_order->order[i].config);
 	for(i=0; i < num_col; i++)fprintf(sh,"0x%"PRIx64",",global_event_order->order[i].config);
 //	fprintf(sh,"null],\n");
-	fprintf(sh,"],\n");
+	fprintf(sh," ],\n");
 //	fprintf(sh,"[null,\"Period\",null,null,null,null,");
-	fprintf(sh,"[,,,\"Period\",,,,,");
+	fprintf(sh,"[, , , \"Period\", , , , ,");
 //	for(i=0; i < num_events; i++)fprintf(sh," %d,",global_attrs[i].attr.sample.sample_period);
 	for(i=0; i < num_col; i++)fprintf(sh," %ld,",global_event_order->order[i].Period);
 //	fprintf(sh,"null],\n");
-	fprintf(sh,"],\n");
+	fprintf(sh," ],\n");
 //	fprintf(sh,"[null,\"Multiplex\",null,null,null,null,");
-	fprintf(sh,"[,,,\"Multiplex\",,,,,");
+	fprintf(sh,"[, , , \"Multiplex\", , , , ,");
 //	for(i=0; i < num_events; i++)fprintf(sh," %5.4lf,",global_multiplex_correction[num_events*(num_cores+num_sockets) + i]);
 	for(i=0; i < num_col; i++)fprintf(sh," %5.4lf,",global_event_order->order[i].multiplex);
 //	fprintf(sh,"null],\n");
-	fprintf(sh,"],\n");
-	fprintf(sh,"[,,,\"Penalty\",,,,,");
+	fprintf(sh," ],\n");
+	fprintf(sh,"[, , , \"Penalty\", , , , ,");
 	for(k=0; k < num_col; k++)fprintf(sh," %d,",global_event_order->order[k].penalty);
-	fprintf(sh,"],\n");
-	fprintf(sh,"[,,,\"Cycles\",,,,,");
+	fprintf(sh," ],\n");
+	fprintf(sh,"[, , , \"Cycles\", , , , ,");
 	for(k=0; k < num_col; k++)fprintf(sh," %d,",global_event_order->order[k].cycle);
-	fprintf(sh,"],\n");
+	fprintf(sh," ],\n");
 
 	total_samples = global_sample_count_in_func + global_branch_sample_count;
 #ifdef DBUG
@@ -2069,7 +2069,7 @@ hotspot_function(pointer_data * global_func_list)
 //		this may have been invoked in func_asm
 		if(this_function->called_branch_eval == 0)branch_eval(this_function->sample_count);
 		for(j=0; j<num_col; j++)fprintf(sh," %d,",this_function->sample_count[ global_event_order->order[j].index ]);
-		fprintf(sh,"],\n");
+		fprintf(sh," ],\n");
 		if(i > global_func_count - func_cutoff)
 			{
 //	print out the most active sources and targets
@@ -2110,7 +2110,7 @@ hotspot_function(pointer_data * global_func_list)
 				for(k=0; k<source_column; k++)fprintf(sh,",");
 				fprintf(sh,"%d,",this_branch->this_branch_target->count);
 				for(k=source_column+1; k< num_col; k++)fprintf(sh,",");
-				fprintf(sh,"],\n");
+				fprintf(sh," ],\n");
 				j++;
 				this_branch = this_branch->next;
 				}
@@ -2161,7 +2161,7 @@ hotspot_function(pointer_data * global_func_list)
 				for(k=0; k<target_column; k++)fprintf(sh,",");
 				fprintf(sh,"%d,",this_branch->this_branch_target->count);
 				for(k=target_column+1; k< num_col; k++)fprintf(sh,",");
-				fprintf(sh,"],\n");
+				fprintf(sh," ],\n");
 				j++;
 				this_branch = this_branch->next;
 				}
@@ -2185,7 +2185,7 @@ hotspot_function(pointer_data * global_func_list)
 	branch_eval(global_sample_count);
 	fprintf(sh,"[,\"Global sample breakdown\",,,,,\"all_modules\",\"all_processes\",");
 	for(j=0; j<num_col; j++)fprintf(sh," %d,",global_sample_count[ global_event_order->order[j].index ]);
-	fprintf(sh,"]\n");
+	fprintf(sh," ]\n");
 	fprintf(sh,"]\n");
 	fclose(sh);
 	fclose(platform);
@@ -3736,6 +3736,8 @@ func_asm(pointer_data * global_func_list, int index)
 			j = 0;
 			if(field3[j] == '\t')j++;
 			if(field3[j] == ' ')j++;
+//		fixup for lock prefix on x86 branch...only seen once
+			if( (field3[j] == 'l') &&(field3[j+1] == 'o') && (field3[j+2] == 'c')) j+=5;
 			while((field3[j] != ' ') && (field3[j] != '\t'))j++;
 #ifdef DBUG
 			fprintf(stderr," j after while loop = %d, %c%c\n",j,field3[j],field3[j+1]);
@@ -3744,7 +3746,7 @@ func_asm(pointer_data * global_func_list, int index)
 			while(field3[j] == ' ')j++;
 //		fixup for PPC64
 			if(field3[j+1] == 'r')j+=4;
-
+			
 //				start of target address
 			k = 0;
 #ifdef DBUG
@@ -4440,27 +4442,27 @@ func_asm(pointer_data * global_func_list, int index)
 	fprintf(list,"[\n");
 	fprintf(list,"[,\"bb\",\"Address\",\"Princ_L#\",\"Principal File\",\"Init_L#\",\"Initial File\",\"Disassembly\",");
 	for(k=0; k < num_col; k++)fprintf(list," \"%s\",",global_event_order->order[k].name);
-	fprintf(list,"],\n");
+	fprintf(list," ],\n");
 	fprintf(list,"[,");
 	for(k=0;k<2;k++)fprintf(list,"\"%d:0\",",k);
 	fprintf(list,"\"2:3\",\"2_1:0\",\"2_2:0\",\"2_3:0\",\"3:0\",");
 	for(k=0;k<num_col;k++)fprintf(list,"\"%d%s\",",4+global_event_order->order[k].base_col,global_event_order->order[k].ctrl_string);
-	fprintf(list,"],\n");
+	fprintf(list," ],\n");
 	fprintf(list,"[,,,,,,,\"MSR Programmings\",");
 	for(k=0; k < num_col; k++)fprintf(list," 0x%"PRIx64",",global_event_order->order[k].config);
-	fprintf(list,"],\n");
+	fprintf(list," ],\n");
 	fprintf(list,"[,,,,,,,\"Periods\",");
 	for(k=0; k < num_col; k++)fprintf(list," %ld,",global_event_order->order[k].Period);
-	fprintf(list,"],\n");
+	fprintf(list," ],\n");
 	fprintf(list,"[,,,,,,,\"Multiplex\",");
 	for(i=0; i < num_col; i++)fprintf(list," %5.4lf,",global_event_order->order[i].multiplex);
-	fprintf(list,"],\n");
+	fprintf(list," ],\n");
 	fprintf(list,"[,,,,,,,\"Penalty\",");
 	for(k=0; k < num_col; k++)fprintf(list," %d,",global_event_order->order[k].penalty);
-	fprintf(list,"],\n");
+	fprintf(list," ],\n");
 	fprintf(list,"[,,,,,,,\"Cycles\",");
 	for(k=0; k < num_col; k++)fprintf(list," %d,",global_event_order->order[k].cycle);
-	fprintf(list,"],\n");
+	fprintf(list," ],\n");
 
 	this_bb = this_function->first_bb;
 	loop_asm = this_function->first_asm;
@@ -4485,7 +4487,7 @@ func_asm(pointer_data * global_func_list, int index)
 		fprintf(list,"[,%d,\"0x%"PRIx64"\",%d,,,, \"%s\",",k+1,this_bb->address, this_bb->source_line, this_bb->text);
 		branch_eval(this_bb->sample_count);
 		for(j=0; j<num_col; j++)fprintf(list," %d,",this_bb->sample_count[ global_event_order->order[j].index]);
-		fprintf(list,"],\n");
+		fprintf(list," ],\n");
 #ifdef DBUG
 		fprintf(stderr," this_bb address = 0x%"PRIx64", loop_asm address = 0x%"PRIx64", k = %d, bb end address = 0x%"PRIx64"\n",
 					this_bb->address, loop_asm->address, k,this_bb->end_address);
@@ -4534,7 +4536,7 @@ func_asm(pointer_data * global_func_list, int index)
 				}
 			branch_eval(loop_asm->sample_count);
 			for(j=0; j<num_col; j++)fprintf(list," %d,",loop_asm->sample_count[ global_event_order->order[j].index ]);
-			fprintf(list,"],\n");
+			fprintf(list," ],\n");
 			loop_asm = loop_asm->next;
 			if(loop_asm == NULL)break;
 			}
@@ -4562,7 +4564,7 @@ func_asm(pointer_data * global_func_list, int index)
 	fprintf(list,"[,%d,,,,,, \"%s\",",k+1,this_function->function_name);
 //	branch_eval already called from hotlist_function
 	for(j=0; j<num_col; j++)fprintf(list," %d,",this_function->sample_count[ global_event_order->order[j].index ]);
-	fprintf(list,"],\n");
+	fprintf(list," ],\n");
 	fprintf(list,"]\n");
 
 //  insert */ here
@@ -4938,26 +4940,26 @@ func_src(pointer_data * global_func_list, int index)
 	fprintf(list,"[\n");
 	fprintf(list,"[,\"Line Number\",\"Source\",");
 	for(k=0; k < num_col; k++)fprintf(list," \"%s\",",global_event_order->order[k].name);
-	fprintf(list,"],\n");
+	fprintf(list," ],\n");
 	fprintf(list,"[,");
 	for(k=0;k<2;k++)fprintf(list,"\"%d:0\",",k);
 	for(k=0;k<num_col;k++)fprintf(list,"\"%d%s\",",2+global_event_order->order[k].base_col,global_event_order->order[k].ctrl_string);
-	fprintf(list,"],\n");
+	fprintf(list," ],\n");
 	fprintf(list,"[,,\"MSR Programming\",");
 	for(k=0; k < num_col; k++)fprintf(list," 0x%"PRIx64",",global_event_order->order[k].config);
-	fprintf(list,"],\n");
+	fprintf(list," ],\n");
 	fprintf(list,"[,,\"Periods\",");
 	for(k=0; k < num_col; k++)fprintf(list," %ld,",global_event_order->order[k].Period);
-	fprintf(list,"],\n");
+	fprintf(list," ],\n");
 	fprintf(list,"[,,\"Multiplex\",");
 	for(k=0; k < num_col; k++)fprintf(list," %5.4lf,",global_event_order->order[k].multiplex);
-	fprintf(list,"],\n");
+	fprintf(list," ],\n");
 	fprintf(list,"[,,\"Penalty\",");
 	for(k=0; k < num_col; k++)fprintf(list," %d,",global_event_order->order[k].penalty);
-	fprintf(list,"],\n");
+	fprintf(list," ],\n");
 	fprintf(list,"[,,\"Cycles\",");
 	for(k=0; k < num_col; k++)fprintf(list," %d,",global_event_order->order[k].cycle);
-	fprintf(list,"],\n");
+	fprintf(list," ],\n");
 
 //      the data
 	for(i=0; i< max_src_lines; i++)
@@ -4966,7 +4968,7 @@ func_src(pointer_data * global_func_list, int index)
 		fprintf(list,"[,%d, \"%s\",",this_source_line->line,this_source_line->source_text);
 		branch_eval(this_source_line->sample_count);
 		for(j=0; j<num_col; j++)fprintf(list," %d,",this_source_line->sample_count[ global_event_order->order[j].index ]);
-		fprintf(list,"],\n");
+		fprintf(list," ],\n");
 		}
 
 
@@ -4974,7 +4976,7 @@ func_src(pointer_data * global_func_list, int index)
 	fprintf(list,"[,%d, \"%s\",",max_src_lines+1,this_function->function_name);
 //	branch_eval already called from hotlist_function
 	for(j=0; j<num_col; j++)fprintf(list," %d,",this_function->sample_count[ global_event_order->order[j].index ]);
-	fprintf(list,"],\n");
+	fprintf(list," ],\n");
 	fprintf(list,"]\n");
 	fclose(list);
 }

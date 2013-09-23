@@ -679,6 +679,7 @@ insert_mmap(mm_struc_ptr this_mm, char* filename, uint64_t new_time)
 	process_struc_ptr this_process;
 	comm_struc_ptr fixup_comm_ptr;
 	char kernel[]="[kernel.kallsyms]_text";
+	char kernel_new[]="[kernel.kallsyms]_stext";
 	int kern_mmap;
 
 	kern_mmap = 0;
@@ -766,7 +767,7 @@ insert_mmap(mm_struc_ptr this_mm, char* filename, uint64_t new_time)
 		this_struc->addr = this_mm->addr;
 		this_struc->len = this_mm->len;
 //	stupid fixup for [kernel.kallsyms]_stext
-		if(strcmp(filename,kernel) == 0)
+		if( (strcmp(filename,kernel) == 0) || (strcmp(filename,kernel_new) == 0))
 			{
 			kern_mmap = 1;
 			if(this_struc->addr == 0)
@@ -781,7 +782,7 @@ insert_mmap(mm_struc_ptr this_mm, char* filename, uint64_t new_time)
 #endif
 			}
 		this_struc->filename = filename;
-		if( (kern_mmap == 1) || (strcmp(filename,kernel) == 0))
+		if( (kern_mmap == 1) || (strcmp(filename,kernel) == 0) || (strcmp(filename,kernel_new) == 0))
 			this_struc->filename = vmlinux;
 		this_struc->time = new_time;
 		this_struc->this_process = this_process;

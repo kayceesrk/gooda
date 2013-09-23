@@ -51,6 +51,7 @@ require(["dojo/_base/declare",
     
       declare.safeMixin(this, params);
       
+      this.hiddenColumns = {};
       this.resourcesToLoad = 3;
       this.selection = {
         processID: 0,
@@ -87,7 +88,6 @@ require(["dojo/_base/declare",
       var self = this;
       
       this.processContainer = new BorderContainer({
-        title: "Hot Processes",
         region: "top",
         style: "height: 33%; padding: 0",
         splitter: true,
@@ -98,9 +98,11 @@ require(["dojo/_base/declare",
       })
       
       this.container.addChild(this.processContainer);
+      this.container.goodaView = this;
       this.report.addView(this.container);
       
       this.hotProcessView = new GOoDA.EventTable({
+        report: self.report,
         container: self.processContainer,
         source: GOoDA.Columns.PROCESSPATH,
         data: self.HotProcessData,
@@ -108,6 +110,10 @@ require(["dojo/_base/declare",
         
         rowCssClasses: function(d){
           return !d.parent ? " parent" : "";
+        },
+
+        hideColumnHandler: function(column){
+          self.report.notifyViews({id: 'hideColumn', payload: column.name});
         },
         
         codeHandler: function(target, e, row, cell, data, table){
@@ -176,7 +182,6 @@ require(["dojo/_base/declare",
       var self = this;
       
       this.functionContainer = new BorderContainer({
-        title: "Hot Functions",
         region: "center",
         splitter: true,
         style: "padding: 0"
@@ -189,19 +194,21 @@ require(["dojo/_base/declare",
       this.bottomContainer.addChild(this.functionContainer);
       
       this.hotFunctionView = new GOoDA.EventTable({
+        report : self.report,
         container: self.functionContainer,
         source: GOoDA.Columns.FUNCTIONNAME,
         data: self.HotFunctionData,
         expand: true,
         
+        hideColumnHandler: function(column){
+          self.report.notifyViews({id: 'hideColumn', payload: column.name});
+        },
+
         codeHandler: function(target, e, row, cell, data, table){
           table.selectRows([data]);
           self.cgView && self.cgView.select(data[GOoDA.Columns.FUNCTIONID]);
-        },
-
-        altCodeHandler: function(target, e, row, cell, data){
           self._openFunctionView(data);
-        }
+        },
       });
 
       this.resourceProcessed();
@@ -220,7 +227,8 @@ require(["dojo/_base/declare",
       else{
         new GOoDA.FunctionView({
           report: this.report,
-          functionID: functionID
+          functionID: functionID,
+          hiddenColumns: this.hiddenColumns
         });
       }
     },
@@ -294,6 +302,18 @@ require(["dojo/_base/declare",
           }
         });
       }
+    },
+
+    unhideColumns: function(){
+      this.hiddenColumns = {};
+      this.hotProcessView && this.hotProcessView.unhideColumns();
+      this.hotFunctionView && this.hotFunctionView.unhideColumns();
+    },
+
+    hideColumn: function(column){
+      this.hiddenColumns[column] = true;
+      this.hotProcessView && this.hotProcessView.hideColumn(column);
+      this.hotFunctionView && this.hotFunctionView.hideColumn(column);
     },
     
     onLoaded: function(){

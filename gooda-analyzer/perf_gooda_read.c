@@ -62,7 +62,7 @@ int source_index=0, target_index=0, bb_exec_index = 0, sw_inst_retired_index = 0
 int source_column = 0, target_column = 0, bb_exec_column = 0, sw_inst_retired_column = 0, next_taken_column = 0;
 int rs_empty_duration_index, call_index, mispredict_index, indirect_index;
 int rs_empty_duration_index, call_column, mispredict_column, indirect_column;
-int *id_array, num_cores, num_sockets=2, *socket, num_events;
+int *id_array, num_cores=0, num_sockets=2, *socket, num_events=0;
 uint64_t min_event_id=0xFFFFFFFFFFFFFFFFUL;
 int default_hash_length=10000, max_default_entries=2000;
 double sqrt_five, max_entry_fraction = 0.2, sum_cutoff = 0.95;
@@ -109,6 +109,7 @@ uint64_t total_struc_size;
 uint64_t * core_start_time, * core_last_time;
 
 char *subst_path_prefix[2]; /* 0 = old path, 1 = new path */
+char *subst_bin_path_prefix[2]; /* 0 = old bin path, 1 = new bin path */
 
 int num_lbr;
 typedef struct lbr_record_struc{
@@ -2583,8 +2584,12 @@ read_cmdline(bufdesc_t *desc, struct perf_file_header *hdr)
 	char *str;
 	int i, argc;
 	int previous_b, len;
+	int raw_mode;
+	char raw[]="-R";
+
 
 	previous_b = 0;
+	raw_mode = 0;
 
 	/*
 	 * note that there is NO argv[x] = NULL termination
@@ -2598,11 +2603,58 @@ read_cmdline(bufdesc_t *desc, struct perf_file_header *hdr)
 #ifdef DBUG
 		fprintf(stderr,"argv[%d] = %s\n", i, str);
 #endif
-
+		if(strcmp(str,raw)==0)raw_mode = 1;
 		free(str);
 	}
+	if(raw_mode == 0)
+		err(1," perf record was not invoked with raw mode flag -R, multiplexing cannot be evaluated\n");
 }
 
+static void
+gooda_init()
+{
+	int i,num_col;
+
+	core_start_time = (uint64_t*)calloc(num_cores,sizeof(uint64_t));
+	if(core_start_time == NULL)
+		err(1,"calloc of core_start_time failed in read_cpu_topology for num_cores = %d",num_cores);
+	core_last_time = (uint64_t*)calloc(num_cores,sizeof(uint64_t));
+	if(core_last_time == NULL)
+		err(1,"calloc of core_last_time failed in read_cpu_topology for num_cores = %d",num_cores);
+
+	init_order();
+	num_branch = global_event_order->num_branch;
+	num_sub_branch = global_event_order->num_sub_branch;
+	num_derived = global_event_order->num_derived;
+	init();
+//      create global_sample_count array
+        global_sample_count = (int*) malloc((num_events*(num_cores + num_sockets +1) + num_branch + num_sub_branch + num_derived + 1)*sizeof(int));
+        if(global_sample_count == NULL)
+                {
+                fprintf(stderr, " failed to malloc array for global_sample_count\n");
+                err(1," failed to malloc global_sample_count");
+                }
+        memset((void*) global_sample_count, 0, (size_t) 
+		(num_events*(num_cores+num_sockets+1) + num_branch + num_sub_branch + num_derived + 1)*sizeof(int) );
+
+	num_col = num_events+global_event_order->num_branch + global_event_order->num_sub_branch +global_event_order->num_derived + 1;
+	fprintf(stderr,"initialization: global_sample_count totals  ");
+	for(i=0; i< num_col; i++)fprintf(stderr," %d,",global_sample_count[num_events*(num_cores+num_sockets) + i]);
+	fprintf(stderr,"\n");
+
+//      create global_multiplex_correction array
+
+        global_multiplex_correction = (double*) malloc(
+		(num_events*(num_cores + num_sockets +1) + num_branch + num_sub_branch + num_derived + 1)*sizeof(double));
+        if(global_multiplex_correction == NULL)
+                {
+                fprintf(stderr, " failed to malloc array for global_multiplex_correction\n");
+                err(1," failed to malloc global_multiplex_correction");
+                }
+        for(i=0; i < (num_events*(num_cores+num_sockets+1) + num_branch + num_sub_branch + num_derived + 1); i++)
+		global_multiplex_correction[i] = 1.0;
+
+}
 static void
 read_cpu_topology(bufdesc_t *desc, struct perf_file_header *hdr)
 {
@@ -2670,53 +2722,25 @@ read_cpu_topology(bufdesc_t *desc, struct perf_file_header *hdr)
 
 	fprintf(stderr," num_cores = %d, num_sockets = %d\n",num_cores,num_sockets);
 
-	core_start_time = (uint64_t*)calloc(num_cores,sizeof(uint64_t));
-	if(core_start_time == NULL)
-		err(1,"calloc of core_start_time failed in read_cpu_topology for num_cores = %d",num_cores);
-	core_last_time = (uint64_t*)calloc(num_cores,sizeof(uint64_t));
-	if(core_last_time == NULL)
-		err(1,"calloc of core_last_time failed in read_cpu_topology for num_cores = %d",num_cores);
-
-	init_order();
-	num_branch = global_event_order->num_branch;
-	num_sub_branch = global_event_order->num_sub_branch;
-	num_derived = global_event_order->num_derived;
-	init();
-//      create global_sample_count array
-        global_sample_count = (int*) malloc((num_events*(num_cores + num_sockets +1) + num_branch + num_sub_branch + num_derived + 1)*sizeof(int));
-        if(global_sample_count == NULL)
-                {
-                fprintf(stderr, " failed to malloc array for global_sample_count\n");
-                err(1," failed to malloc global_sample_count");
-                }
-        memset((void*) global_sample_count, 0, (size_t) 
-		(num_events*(num_cores+num_sockets+1) + num_branch + num_sub_branch + num_derived + 1)*sizeof(int) );
-
-	num_col = num_events+global_event_order->num_branch + global_event_order->num_sub_branch +global_event_order->num_derived + 1;
-	fprintf(stderr,"initialization: global_sample_count totals  ");
-	for(i=0; i< num_col; i++)fprintf(stderr," %d,",global_sample_count[num_events*(num_cores+num_sockets) + i]);
-	fprintf(stderr,"\n");
-
-//      create global_multiplex_correction array
-
-        global_multiplex_correction = (double*) malloc(
-		(num_events*(num_cores + num_sockets +1) + num_branch + num_sub_branch + num_derived + 1)*sizeof(double));
-        if(global_multiplex_correction == NULL)
-                {
-                fprintf(stderr, " failed to malloc array for global_multiplex_correction\n");
-                err(1," failed to malloc global_multiplex_correction");
-                }
-        for(i=0; i < (num_events*(num_cores+num_sockets+1) + num_branch + num_sub_branch + num_derived + 1); i++)
-		global_multiplex_correction[i] = 1.0;
+	gooda_init();
 #endif
 }
 
 static void
 read_numa_topology(bufdesc_t *desc, struct perf_file_header *hdr)
 {
-        uint32_t i, nr, n;
         uint64_t mem_total, mem_free;
-        char *str;
+        uint32_t i, nr, n, cpu, socket_count, core_count,num_col;
+	int len,j,k,l,m,base_core_count;
+        char *str, *nptr,*endptr;
+	long lower,upper;
+
+	socket_count = 0;
+	core_count = 0;
+
+#ifdef ANALYZE
+	if(process_stack == NULL)socket_count = nr;
+#endif
 
         raw_read_buffer(desc, &nr, sizeof(nr));
 	if (desc->needs_bswap)
@@ -2742,9 +2766,41 @@ read_numa_topology(bufdesc_t *desc, struct perf_file_header *hdr)
 
                 fprintf(stderr,"Node%u cpulist : %s\n", n, str);
 #endif
+		nptr = str;
+//		figure out if the list is comma seperated or a range defined with -
+		while(nptr <= str+len)
+			{
+			lower = strtol(nptr,&endptr, 0);
+			if(*endptr == '-')
+				{
+				nptr = endptr+1;
+				upper = strtol(nptr,&endptr, 0);
+				nptr = endptr + 1;
+				core_count += upper - lower + 1;
+//			sleazy trick to deal with PPC numbering 
+				base_core_count = 0;
+				}
+			else 
+				{
+				nptr = endptr + 1;
+				core_count++;
+				}
+			}
+//		core_count += base_core_count;
+		fprintf(stderr," core_count = %d\n",core_count);
                 free(str);
 
         }
+
+#ifdef ANALYZE
+	if(process_stack == NULL)
+		{
+		num_cores = core_count;
+		num_sockets = socket_count;
+		fprintf(stderr," iNUMA_topology initializing, num_cores = %d, num_sockets = %d\n",num_cores,num_sockets);
+		gooda_init();
+		}
+#endif
 }
 
 static int
@@ -3201,7 +3257,7 @@ check4gooda(bufdesc_t *desc)
 
 static void usage(void)
 {
-	fprintf(stderr,"Usage: perf [-v] [-h] [a] [-i perf_data_file] [-n] [-p old_prefix,new_prefix] Val\n");
+	fprintf(stderr,"Usage: gooda [-v] [-h] [-i perf_data_file] [-n val] [-p old_prefix,new_prefix] [-p old_bin_prefix,new_bin_prefix] \n");
 	fprintf(stderr," by default gooda will try to read perf data from ./perf.data\n");
 	fprintf(stderr,"   use the -i option and the preferred file name to change this\n");
 	fprintf(stderr," by default gooda will attempt to create annoted disassembly and source listings, and CFG displays\n");
@@ -3209,10 +3265,8 @@ static void usage(void)
 	fprintf(stderr,"   This limit can be changed by using the -n option followed by the number\n");
 	fprintf(stderr,"   of functions that you desire having this more detailed data for.\n");
 	fprintf(stderr,"   Increasing the number will slightly increase the runtime\n");
-	fprintf(stderr," Adding the option -a will result in the aggregated kernel sample process pid = -1 also showing up\n");
-	fprintf(stderr,"   in the function list and source, asm and cfg's\n");
-	fprintf(stderr,"   thus the kernel samples will be effectively double counted\n");
-	fprintf(stderr," Path prefix can be substituted for another using the -p old_prefix,new_prefix option.\n");
+	fprintf(stderr," Source Path prefix can be substituted for another using the -p old_prefix,new_prefix option.\n");
+	fprintf(stderr," Bin Path prefix can be substituted for another using the -b old_bin_prefix,new_bin_prefix option.\n");
 }
 
 /*
@@ -3226,13 +3280,13 @@ main(int argc, char **argv)
         pointer_data * global_func_list;
 	column_flag = 0;
 	char def_file[] = "perf.data";
-	char * file_name, *p;
+	char * file_name, *p, *b;
 	struct rusage r_usage;
 
 	file_name = def_file;
 	asm_cutoff = asm_cutoff_def;	
 
-	while ((c= getopt(argc, argv, "i:n:v:ahp:")) != -1) {
+	while ((c= getopt(argc, argv, "i:n:v:hp:b:")) != -1) {
 		switch(c) {
 		case 'v':
 			fprintf(stderr,"perf_reader v%s\n", PERF_READER_VERSION);
@@ -3250,6 +3304,16 @@ main(int argc, char **argv)
 			subst_path_prefix[0] = optarg;
 			subst_path_prefix[1] = p+1;
 			break;
+		case 'b':
+			b = strchr(optarg, ',');
+			if (!b) {
+				fprintf(stderr, "-b requires old_prefix,new_prefix\n");
+				exit(1);
+			}
+			*b = '\0';
+			subst_bin_path_prefix[0] = optarg;
+			subst_bin_path_prefix[1] = b+1;
+			break;
 		case 'i':
 			len = strlen(optarg);
 			file_name = malloc(len+1);
@@ -3260,10 +3324,6 @@ main(int argc, char **argv)
 			break;
 		case 'n':
 			asm_cutoff = atoi(optarg);
-			break;
-		case 'a':
-			aggregate_func_list = 1;
-			fprintf(stderr,"function list will include functions in aggregated psuedo kernel process, pid = -1\n");
 			break;
 		default:
 			errx(1, "invalid argument key");
@@ -3323,10 +3383,10 @@ main(int argc, char **argv)
 		{
 		fprintf(stderr,"No data in IP ranges defined by functions, exiting\n");
 		}
-//		print out the process/module spreadsheet
-	process_table();
 //		print out the function spreadsheet
        	hotspot_function( global_func_list);
+//		print out the process/module spreadsheet
+	process_table();
 
 	num_col = num_events + global_event_order->num_branch + global_event_order->num_sub_branch +global_event_order->num_derived + 1;
        	fprintf(stderr," bad rva count = %d, with %d samples, out of global_rva = %d, with %d total samples in modules with functions and %d total samples\n",

@@ -1,7 +1,7 @@
 /*
   Visualizer for the Generic Optimization Data Analyzer, Copyright (c)
   2012, The Regents of the University of California, through Lawrence
-  Berkeley National Laboratory (subject to receipt of any required
+e Berkeley National Laboratory (subject to receipt of any required
   approvals from the U.S. Dept. of Energy).  All rights reserved.
   
   This code is derived from software contributed by Roberto Agostino 
@@ -71,11 +71,17 @@ require(["dojo/_base/declare",
         if(!value) return '';
 
         if(column.isCycle){
+          var referenceCycles;
           var cvalue;
-          var referenceCycles = row >= 0 ? dataContext['unhalted_core_cycles'] : self.data.referenceCycles;
 
-          if(column.name == GOoDA.Columns.UNHALTEDCYCLES)
-            referenceCycles = column.summary;
+          if(self.data.isDiff && dataContext._collapsed != undefined){
+            referenceCycles = self.data.grid[dataContext.id + 2][column.id];
+          }else{
+            if(column.name == GOoDA.Columns.UNHALTEDCYCLES)
+              referenceCycles = column.summary;
+            else
+              referenceCycles = row >= 0 ? dataContext['unhalted_core_cycles'] : self.data.referenceCycles;
+          }
 
           if(sampleMode && cycleMode){
             cvalue = Math.floor(value*column.period*column.penalty*inverseReferencePeriod);
@@ -109,9 +115,13 @@ require(["dojo/_base/declare",
               cvalue = buildField(column, cvalue);
           }
 
-          return cvalue;
-        }else
-          return sampleMode ? value : (value*column.period).toExponential(3);
+          return value < 0 ? cvalue : " " + cvalue;
+        }else if(sampleMode){
+          return value < 0 ? value : " " + value;
+        }else{
+          var ret = (value*column.period).toExponential(3);
+          return value < 0 ? ret : " " + ret;
+        }
       };
       
       function sourceFormatter(row, cell, value, column, dataContext){
@@ -138,12 +148,30 @@ require(["dojo/_base/declare",
           style: "padding: 0"
         });
 
+        var restoreButton = new Button({
+          label: 'Restore Order',
+          showLabel: false,
+          iconClass: "dijitEditorIcon dijitEditorIconIconPaste",
+          onClick: function(){
+            self.restoreOrder();
+          }
+        });
+
         var expandButton = new Button({
           label: 'Toggle Expansion',
           showLabel: false,
           iconClass: "dijitEditorIcon dijitEditorIconListBulletOutdent",
           onClick: function(){
             self.toggleExpansion();
+          }
+        });
+
+        var unhideButton = new Button({
+          label: 'Unhide Columns',
+          showLabel: false,
+          iconClass: "dijitEditorIcon dijitEditorIconUndo",
+          onClick: function(){
+            self.report.notifyViews({id: 'unhideColumns'});
           }
         });
 
@@ -173,8 +201,10 @@ require(["dojo/_base/declare",
           }
         });
 
+        toolbar.addChild(restoreButton);
         if(self.expand)
           toolbar.addChild(expandButton);
+        toolbar.addChild(unhideButton);
         toolbar.addChild(cyclesButton);
         toolbar.addChild(samplesButton);
         toolbar.addChild(searchBox);
@@ -193,7 +223,9 @@ require(["dojo/_base/declare",
           syncColumnCellResize: true,
           enableCellNavigation: false,
           enableColumnReorder: false,
-        }; 
+          hideColumnHandler: self.hideColumnHandler,
+          isDiff: self.data.isDiff
+        };
       }
       
       function buildField(column, cycles, percentage){
@@ -210,10 +242,11 @@ require(["dojo/_base/declare",
         var x = first[sortcol], y = second[sortcol];
         var diff = sortDiff(x, y);
         
-        if(diff)
+        if(diff){ // number
           return (diff > 0 ? -1 : 1);
-        else
+        }else{ // string
           return sortdir ? (a.id > b.id ? 1 : -1) : (a.id > b.id ? -1 : 1);
+        }
       }
       
       function hexDiff(a, b){
@@ -352,9 +385,6 @@ require(["dojo/_base/declare",
           sortcol = sortCol.id;
           sortdir = sortAsc;
 
-          if(sortcol == 'code')
-            sortcol = 'id';
-
           switch(sortCol.id){
             case GOoDA.Columns.OFFSET:
             case GOoDA.Columns.LENGTH:
@@ -411,16 +441,21 @@ require(["dojo/_base/declare",
 
         switch(column.id){
           case GOoDA.Columns.SOURCE:
-            column.id = 'code';
+            column.sortable = false;
             column.cssClass = 'code';
             column.formatter = sourceFormatter;
             column.resizable = true;
             break;
 
-          case GOoDA.Columns.FUNCTIONNAME:
           case GOoDA.Columns.DISASSEMBLY:
+            column.sortable = false;
+            column.cssClass = 'code';
+            column.formatter = treeFormatter;
+            column.resizable = true;
+            break;
+
+          case GOoDA.Columns.FUNCTIONNAME:
           case GOoDA.Columns.PROCESSPATH:
-            column.id = 'code';
             column.cssClass = 'code';
             column.formatter = treeFormatter;
             column.resizable = true;
@@ -460,9 +495,18 @@ require(["dojo/_base/declare",
 
       function fillTable(){
         dataView.beginUpdate();
-        dataView.setItems(self.data.grid);
+        dataView.setItems(self.data.grid.slice(0));
         dataView.setFilter(filter);
         dataView.endUpdate();
+      }
+
+      this.restoreOrder = function(){
+        sortcol = 'id';
+        sortDiff = defaultDiff;
+
+        grid.clearSorting();
+        dataView.sort(comparer, false);
+        restoreSelectedRows();
       }
 
       this.toggleExpansion = function(){
@@ -478,6 +522,29 @@ require(["dojo/_base/declare",
         grid.invalidate();
         dataView.refresh();
         restoreSelectedRows();
+      }
+
+      this.unhideColumns = function(){
+        for(var i = 0; i < this.columns.length; i++){
+          this.columns[i].visible = true;
+        }
+
+        grid.setColumns(this.columns);
+      }
+
+      this.hideColumn = function(name){
+        for(var i = 0; i < this.columns.length; i++){
+          var column = this.columns[i];
+
+          if(column.name == name){
+            if(column.visible){
+              column.visible = false;
+              grid.setColumns(this.columns);
+            }
+
+            break;
+          }
+        }
       }
 
       this.unselect = function(){
