@@ -248,7 +248,7 @@ extern char **fixed_name_list, **branch_name_list;
 extern int * fixed_event_index;
 extern int column_flag;
 extern int family, model;
-extern char *arch, *cpu_desc;
+extern char *arch, *machine, *cpu_desc;
 extern uint64_t base_kern_address;
 extern uint32_t pid_ker;
 extern int aggregate_func_list;

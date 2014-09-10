@@ -147,6 +147,7 @@ typedef struct module_struc{
 	int			remote_calls;
 	int			set_starting_ip;
 	int			bin_type;
+	int			is_kernel;
 	}module_data;
 
 typedef struct thread_struc{

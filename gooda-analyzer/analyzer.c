@@ -49,6 +49,8 @@ int reorder_module(process_struc_ptr this_process);
 int reorder_rva(module_struc_ptr this_module, process_struc_ptr this_process);
 void function_accumulate(module_struc_ptr this_module, process_struc_ptr this_process);
 void * inst_working_set(module_struc_ptr this_module);
+void printf_rva(sample_struc_ptr, function_struc_ptr, process_struc_ptr);
+
 int first_module = 0;
 
 char* old_module_path=NULL;
@@ -479,6 +481,17 @@ void
 quickSort_link(linkpairs_data *arr, int elements)
 {
 	qslink( arr, 0, elements-1);
+}
+
+void
+printf_rva(sample_struc_ptr this_rva, function_struc_ptr this_function, process_struc_ptr this_process)
+{
+	int i,j,k;
+	fprintf(stderr,"printf_RVA address = 0x%"PRIx64", total_sample_count = %d, function  %s, module %s \n",
+		 this_rva->rva, this_rva->total_sample_count, this_function->function_name, this_process->name);
+	fprintf(stderr,"Sample array  ");
+	for(i=0;i<num_events;i++)fprintf(stderr," %d,",this_rva->sample_count[num_events*(num_cores + num_sockets) + i]);
+	fprintf(stderr,"\n");
 }
 
 void * 
@@ -1124,6 +1137,9 @@ functionlist_struc_ptr
 get_functionlist(module_struc_ptr this_module)
 {
 	char line_buf[1024], local_bin_dir[] = "./binaries/",  cmd[] = "readelf -s -W ", FUNC[] = "FUNC";
+	char machine_cmd[] = "readelf -e ", machine_cmd2[] = " | grep -i ";
+	char *module_arch_cmd;
+	int module_arch_cmd_len, machine_len, machine_cmd_len=10, machine_cmd2_len=11;
 	char *endptr;
 	char demangle[] = "c++filt ";
 	char field[9][1024], space = ' ', colon = ':';
@@ -1135,7 +1151,8 @@ get_functionlist(module_struc_ptr this_module)
 	uint32_t func_len, previous_func_len, module_len, module_name_len, num_func_in_file, num_func, local_name_len;
 	size_t  funcname_len, funcbind_len, local_len = 11, cmd_len = 14, demangle_len = 8;
 	int i,j,k, lines_in_file, field_count, char_count;
-	FILE *file, *filt;
+	FILE *file, *filt, *grep_out;
+	char *grep_out_val;
 	int access_status;
 	int line_buf_len, buf_len, local_flag,free_count, func_count,len_sum = 0;
 	int ppc_cmd1_len, ppc_cmd2_len, ppc_cmd3_len;
@@ -1146,6 +1163,9 @@ get_functionlist(module_struc_ptr this_module)
 	local_flag = 0;
 	local_len = strlen(local_bin_dir);
 	cmd_len = strlen(cmd);
+	machine_len = strlen(machine);
+	machine_cmd_len = strlen(machine_cmd);
+	machine_cmd2_len = strlen(machine_cmd2);
 	demangle_len = strlen(demangle);
 
 	if(first_module != 2)first_module = 1;
@@ -1170,7 +1190,7 @@ get_functionlist(module_struc_ptr this_module)
 	if((strcmp(this_module->module_name,"triad") == 0) && (first_module == 1))
 		{
 		first_module = 0;
-		fprintf(stderr,"this is triad\n");
+		fprintf(stderr,"this is vmlinux\n");
 		}
 
 //	check local bin directory first
@@ -1184,7 +1204,6 @@ get_functionlist(module_struc_ptr this_module)
 	for(j=0; j< module_name_len; j++)local_name[j+local_len] = this_module->module_name[j];
 	local_name[local_len+module_name_len] = '\0';
 #ifdef DBUG
-
 	fprintf(stderr," module local name = %s\n",local_name);
 #endif
 	access_status = access(local_name, R_OK);
@@ -1197,6 +1216,7 @@ get_functionlist(module_struc_ptr this_module)
 			fprintf(stderr," failed to malloc buffer for local_path, path = %s\n",this_module->path);
 			err(1, "failed to malloc buffer for module local_path");
 			}
+		module_len = local_len+module_name_len -1;
 		for(j=0; j< local_len+module_name_len; j++)this_module->local_path[j] = local_name[j];
 
 		local_cmd = (char*) malloc(cmd_len + local_len + module_name_len + 1);
@@ -1261,6 +1281,43 @@ get_functionlist(module_struc_ptr this_module)
 			}
 		}
 //	found module
+// 	check architecture
+	fprintf(stderr," machine_cmd_len = %d, module_len = %d, machine_cmd2_len = %d, machine_len = %d\n",
+		machine_cmd_len, module_len, machine_cmd2_len, machine_len);
+	fprintf(stderr," machine_cmd = %s, module = %s, machine_cmd2 = %s, machine = %s\n",
+		machine_cmd,this_module->local_path,machine_cmd2,machine);
+	module_arch_cmd = (char *)malloc(machine_cmd_len + module_len + machine_cmd2_len + machine_len + 1);
+	for(j=0; j< machine_cmd_len; j++)module_arch_cmd[j] = machine_cmd[j];
+	for(j=0; j< module_len; j++)module_arch_cmd[machine_cmd_len + j] = this_module->local_path[j];
+	for(j=0; j< machine_cmd2_len; j++)module_arch_cmd[machine_cmd_len + module_len + j] = machine_cmd2[j];
+	for(j=0; j< machine_len; j++)module_arch_cmd[machine_cmd_len + module_len + machine_cmd2_len + j] = machine[j];
+	module_arch_cmd[machine_cmd_len + module_len + machine_cmd2_len + machine_len] = '\0';
+	fprintf(stderr," module %s, machine_arch cmd = %s\n", this_module->local_path, module_arch_cmd);
+	grep_out = popen(module_arch_cmd, "r");
+        if(grep_out == NULL)
+                {
+                fprintf(stderr," failed to get a pipe for module_arch_cmd, path = %s\n",this_module->path);
+                return NULL;
+                }
+	lines_in_file = 0;
+	line_buf_len = 1024;
+	grep_out_val = fgets(line_buf,line_buf_len,grep_out);
+	if(grep_out_val == NULL)
+		{
+#ifdef DBUG
+		fprintf(stderr," grep_out_val was NULL for %s\n",module_arch_cmd);
+#endif
+		free(module_arch_cmd);
+		return NULL;
+		}
+		else
+		{
+#ifdef DBUG
+		fprintf(stderr," grep out line_buff was %s\n",line_buf);
+#endif
+		free(module_arch_cmd);
+		}
+
 //	read lines of readelf -s output, skip first 3, remove zero length entries
 //	and create a stack
 	lines_in_file = 0;
@@ -1311,7 +1368,11 @@ get_functionlist(module_struc_ptr this_module)
                         }
 		if(field_count >= 9)continue;
 		func_len = atoi(field[2]);
-		if(func_len == 0)continue;
+		if(func_len == 0)
+			{
+			func_len = strtol(field[2], (char **) NULL, 16);
+			if(func_len == 0)continue;
+			}
 		if(strcmp(field[3], FUNC) != 0)continue;
 		num_func_in_file++;
 
@@ -1420,7 +1481,7 @@ get_functionlist(module_struc_ptr this_module)
 
 
 /*
-		if(strcmp(this_module->module_name,"triad_inl_g") == 0)
+		if(strcmp(this_module->module_name,"vmlinux") == 0)
 			{
 			fprintf(stderr," addr = 0x%lx, len = %d, %s,  %s\n",func_data_buffer[i].base,func_data_buffer[i].len,func_data_buffer[i].bind,func_data_buffer[i].name);
 			len_sum += func_data_buffer[i].len;
@@ -1617,6 +1678,7 @@ function_accumulate(module_struc_ptr this_module, process_struc_ptr this_process
 	while(loop_sample != NULL)
 		{
 		global_rva++;
+//			walk function list until base + len > current RVA
 		while((uint64_t)(this_list[i].base +(uint64_t) this_list[i].len) < loop_sample->rva)
 		
 			{
@@ -1630,6 +1692,7 @@ function_accumulate(module_struc_ptr this_module, process_struc_ptr this_process
 			i++;
 			this_function = NULL;
 			}
+//			check that current RVA is not < base...if so RVA is not in a function range
 		if(loop_sample->rva < (uint64_t) this_list[i].base)
 			{
 			bad_rva++;
@@ -1642,7 +1705,7 @@ function_accumulate(module_struc_ptr this_module, process_struc_ptr this_process
 			loop_sample = loop_sample->next;
 			continue;
 			}
-//		found the function
+//		found the function that includes this RVA
 //		fprintf(stderr," this_function address = 0x%"PRIx64"\n",this_function);
 		if(this_function == NULL)
 			{
@@ -1668,8 +1731,8 @@ function_accumulate(module_struc_ptr this_module, process_struc_ptr this_process
 			global_func_count++;
 #ifdef DBUG
 			if(old_function != NULL)
-			fprintf(stderr," this_function address = %p, name = %s, len = %ld, count = %d, total = %d\n",
-				old_function, old_function->function_name,old_function->function_length, old_rva_count,total_rva_count);
+			fprintf(stderr," this_function address = %p, name = %s, len = %ld, rva_count = %d, total_rvas = %d, cycle_samples= %d, total_samples = %d\n",
+				old_function, old_function->function_name,old_function->function_length, old_rva_count,total_rva_count, old_function->cycle_count, old_function->total_sample_count);
 #endif
 			}
 //		increment rva socket, total and module/process sample_count arrays
@@ -1677,6 +1740,7 @@ function_accumulate(module_struc_ptr this_module, process_struc_ptr this_process
 			{
 			for(core = 0; core < num_cores; core++)
 				{
+				this_function->cycle_count += loop_sample->sample_count[core];
 				if(loop_sample->sample_count[event*num_cores + core] != 0)
 					{
 					loop_sample->sample_count[num_events*(num_cores + num_sockets) + event] += 
@@ -1743,7 +1807,10 @@ function_accumulate(module_struc_ptr this_module, process_struc_ptr this_process
 			}
 
 		if(this_function != NULL)this_function->total_sample_count += loop_sample->total_sample_count;
-
+#ifdef DBUG
+		if(strcmp(this_function->function_name, "context_switch.isra.59") == 0)
+				printf_rva(loop_sample, this_function, this_function->this_process);
+#endif
 		rva_count++;
 		total_rva_count++;
 		total_function_sample_count += loop_sample->total_sample_count;
@@ -3156,7 +3223,7 @@ func_asm(pointer_data * global_func_list, int index)
 	sample_struc_ptr loop_rva;
 	asm_struc_ptr this_asm=NULL, next_asm=NULL, previous_asm=NULL, loop_asm=NULL, old_loop_asm;
 	basic_block_struc_ptr this_bb=NULL, next_bb=NULL, previous_bb=NULL, loop_bb=NULL, target_bb, last_bb_struc;
-	int *sample_count;
+	int *sample_count, asm_total_sample_count, asm_cycle_count;
 	float summed_samples, total_samples;
 	size_t base, end;
 	int count, branch, branch_count, call, first_bb, last_bb, bb_count, deadbeef, first_src_bb;
@@ -3190,6 +3257,8 @@ func_asm(pointer_data * global_func_list, int index)
 	cfg_len = strlen(cfg);
 	total_samples = global_sample_count_in_func;
 	summed_samples = 0;
+	asm_total_sample_count = 0;
+	asm_cycle_count = 0;
 	next_taken_count_sum = 0;
 	next_taken_stack = NULL;
 
@@ -3214,7 +3283,7 @@ func_asm(pointer_data * global_func_list, int index)
 	this_process = this_function->this_process;
 	loop_rva = this_function->first_rva;
 #ifdef DBUG
-	fprintf(stderr," func_asm index = %d, %d, function %s, first rva = 0x%"PRIx64", base = 0x%"PRIx64", len = %lx\n",i,hotspot_index,this_function->function_name, loop_rva->rva,this_function->function_rva_start, this_function->function_length);
+	fprintf(stderr," func_asm index = %d, %d, function %s, first rva = 0x%"PRIx64", base = 0x%"PRIx64", len = %lx, total sample count = %d\n",i,hotspot_index,this_function->function_name, loop_rva->rva,this_function->function_rva_start, this_function->function_length, this_function->total_sample_count);
 	fprintf(stderr," asmd_len = %d, asmd = %s\n",asmd_len,asmd);
 #endif
 //	create asm spreadsheet file name string
@@ -3405,32 +3474,32 @@ func_asm(pointer_data * global_func_list, int index)
 #endif
 		if(first_asm == 0)first_asm = address;
 		last_asm = address;
-		if(loop_rva != NULL)
-			{
-			while((address > loop_rva->rva) && (loop_rva != NULL))
-				{
-				loop_rva=loop_rva->next;
-				if(loop_rva == NULL)break;
-#ifdef DBUG
+//		if(loop_rva != NULL)
+//			{
+//			while((address > loop_rva->rva) && (loop_rva != NULL))
+//				{
+//				loop_rva=loop_rva->next;
+//				if(loop_rva == NULL)break;
+//#ifdef DBUG
 //      follow a single address through if there are worries about lost samples/rva struc's
 //		if(loop_rva->rva == 0x43e110)fprintf(stderr,"func_asm 0 function for address 0x43e110, cycle count = %d\n",
 //				loop_rva->sample_count[num_events*(num_cores + num_sockets)]);
 //		if(loop_rva->rva == 0x43e111)fprintf(stderr,"func_asm 0 for address 0x43e111, cycle count = %d\n",
 //				loop_rva->sample_count[num_events*(num_cores + num_sockets)]);
-#endif
-
-#ifdef DBUG
-				if(loop_rva == NULL)
-					{
-					fprintf(stderr," address = 0x%"PRIx64", and loop_rva = %p\n",address,loop_rva);
-					}
-				else
-					{
-					fprintf(stderr,"2 address = 0x%"PRIx64", and loop_rva->rva = 0x%"PRIx64"\n",address,loop_rva->rva);
-					}
-#endif
-				}
-			}
+//#endif
+//
+//#ifdef DBUG
+//				if(loop_rva == NULL)
+//					{
+//					fprintf(stderr," address = 0x%"PRIx64", and loop_rva = %p\n",address,loop_rva);
+//					}
+//				else
+//					{
+//					fprintf(stderr,"2 address = 0x%"PRIx64", and loop_rva->rva = 0x%"PRIx64"\n",address,loop_rva->rva);
+//					}
+//#endif
+//				}
+//			}
 //	check for branch instructions that do not place the target address in the asm text
 //	placed off in function to allow other architectures to be used.
 //	This appears to be the only ISA dependent component of the analysis
@@ -3448,16 +3517,17 @@ func_asm(pointer_data * global_func_list, int index)
 
 //		build asm struc
 //
-#ifdef DBUG
-		if(loop_rva == NULL)
-			{
-			fprintf(stderr," address = 0x%"PRIx64", and loop_rva = %p\n",address,loop_rva);
-			}
-		else
-			{
-			fprintf(stderr,"3 address = 0x%"PRIx64", and loop_rva->rva = 0x%"PRIx64"\n",address,loop_rva->rva);
-			}
-#endif
+//#ifdef DBUG
+//		if(loop_rva == NULL)
+//			{
+//			fprintf(stderr," address = 0x%"PRIx64", and loop_rva = %p\n",address,loop_rva);
+//			}
+//		else
+//			{
+//			fprintf(stderr,"3 address = 0x%"PRIx64", and loop_rva->rva = 0x%"PRIx64"\n",address,loop_rva->rva);
+//			}
+//#endif
+
 		this_asm = asm_struc_create();
 		if(this_asm == NULL)
 			{
@@ -3704,7 +3774,7 @@ func_asm(pointer_data * global_func_list, int index)
 //		copy rva sample_count, for now just the totals
 		if(loop_rva != NULL)
 			{
-			if(address == loop_rva->rva)
+			while( (loop_rva != NULL) && (address >= loop_rva->rva))
 				{
 #ifdef DBUG
 //      follow a single address through if there are worries about lost samples/rva struc's
@@ -3713,17 +3783,28 @@ func_asm(pointer_data * global_func_list, int index)
 //		if(loop_rva->rva == 0x43e111)fprintf(stderr,"func_asm 1 for address 0x43e111, cycle count = %d\n",
 //				loop_rva->sample_count[num_events*(num_cores + num_sockets)]);
 #endif
-				this_asm->total_sample_count = loop_rva->total_sample_count;
+				this_asm->total_sample_count += loop_rva->total_sample_count;
+				asm_cycle_count += this_asm->sample_count[num_events*(num_cores + num_sockets)];
 				for(k=0;k<num_events; k++)
-					this_asm->sample_count[num_events*(num_cores + num_sockets) + k] = 
+					{
+					this_asm->sample_count[num_events*(num_cores + num_sockets) + k] += 
 						loop_rva->sample_count[num_events*(num_cores + num_sockets) + k];
+					asm_total_sample_count += loop_rva->sample_count[num_events*(num_cores + num_sockets) + k];
+					}
 				if(source_index != 0)
-					this_asm->sample_count[source_index] = loop_rva->sample_count[source_index];
+					this_asm->sample_count[source_index] += loop_rva->sample_count[source_index];
 				if(target_index != 0)
-					this_asm->sample_count[target_index] = loop_rva->sample_count[target_index];
+					this_asm->sample_count[target_index] += loop_rva->sample_count[target_index];
 				if(next_taken_index != 0)
-					this_asm->sample_count[next_taken_index] = loop_rva->sample_count[next_taken_index];
+					this_asm->sample_count[next_taken_index] += loop_rva->sample_count[next_taken_index];
+#ifdef DBUG
+		if(strcmp(this_function->function_name, "context_switch.isra.59") == 0) 
+				printf_rva(loop_rva, this_function, this_function->this_process);
+#endif
+//				this structure should be overwritten by the last rva..which is the closest to the address
 				this_asm->next_taken_list = loop_rva->next_taken_list;
+
+				loop_rva = loop_rva->next;
 				}
 			}
 		if(branch == 1)
@@ -3788,6 +3869,9 @@ func_asm(pointer_data * global_func_list, int index)
 
 #ifdef DBUG
 	fprintf(stderr," finished loop over line_buf, branch_count = %d, filename = %s\n", branch_count,this_function->function_name);
+	fprintf(stderr," function =%s, function_sample_count = %d, function cycle count = %d, asm_sample_count = %d, asm_cycle_count = %d\n",
+		this_function->function_name, this_function->total_sample_count, this_function->cycle_count, 
+			asm_total_sample_count, asm_cycle_count);
 	loop_asm = this_function->first_asm;
 	while(loop_asm != NULL)
 		{
@@ -4299,6 +4383,59 @@ func_asm(pointer_data * global_func_list, int index)
 		k = tmp;
 		bb_count++;
 		}
+//	fixup code for functions with a single bb
+		if(this_function->first_bb == NULL)
+			{
+#ifdef DBUG
+			fprintf(stderr," entering single BB function fixup code\n");
+#endif
+			bb_count = 1;
+			max_bb_count = 0;
+			this_bb = basic_block_struc_create();
+			if(this_bb == NULL)
+				{
+				fprintf(stderr,"failed to create BB struc for function %s, address 0x%"PRIx64", entry %d\n",this_function->function_name,branch_address[k], k);
+				err(1,"failed to create BB struc");
+				}
+			this_function->first_bb = this_bb;
+			this_bb->next = NULL;
+			this_bb->previous = NULL;
+			this_bb->address = this_function->first_asm->address;
+			this_bb->end_address = end;
+			this_bb->source_line = 0;
+	                this_bb->text = (char*)malloc(bb_text_len);
+        	        if(this_bb->text == NULL)
+                	        {
+                        	fprintf(stderr,"failed to create BB struc text for function %s, address 0x%"PRIx64", entry %d\n",this_function->function_name,branch_address[k], k);
+	                        err(1,"failed to create BB struc text");
+        	                }
+				sprintf(this_bb->text," Basic Block %d <0x%"PRIx64"><0x%"PRIx64">\0",bb_count,this_bb->address,end);
+
+			last_bb_struc = this_bb;
+			loop_asm = this_function->first_asm;
+#ifdef DBUG
+			if(loop_asm == NULL)fprintf(stderr," loop_asm = NULL\n");
+			fprintf(stderr," single BB function fixup code, entering event sum loop, first = 0x%"PRIx64", end = 0x%"PRIx64"\n", loop_asm->address, end);
+#endif
+                        while((loop_asm != NULL) && (loop_asm->address <= end))
+                                {
+                                for(tmp2=0; tmp2 < num_events; tmp2++)
+                                        this_bb->sample_count[num_events*(num_cores + num_sockets) + tmp2] +=
+                                                loop_asm->sample_count[num_events*(num_cores + num_sockets) + tmp2];
+                                if(source_index != 0)
+                                        this_bb->sample_count[source_index] += loop_asm->sample_count[source_index];
+                                if(target_index != 0)
+                                        this_bb->sample_count[target_index] += loop_asm->sample_count[target_index];
+                                if(next_taken_index != 0)
+                                        this_bb->sample_count[next_taken_index] += loop_asm->sample_count[next_taken_index];
+                                this_bb->total_sample_count += loop_asm->total_sample_count;
+                                if(this_bb->total_sample_count > max_bb_count)max_bb_count = this_bb->total_sample_count;
+                                loop_asm = loop_asm->next;
+                                }
+#ifdef DBUG
+			fprintf(stderr," single BB function fixup code, finished event sum loop\n");
+#endif
+			}
 //	end of loop over BB's
 
 
@@ -4432,6 +4569,7 @@ func_asm(pointer_data * global_func_list, int index)
 		ret_val = system(svg_cmd);
 		if(ret_val == -1)fprintf(stderr,"system call of dot -Tsvg failed in func_asm");
 		}
+//	deal with single bb case
 
 //	print out the asm spreadsheet
 #ifdef DBUG
@@ -4467,6 +4605,8 @@ func_asm(pointer_data * global_func_list, int index)
 	this_bb = this_function->first_bb;
 	loop_asm = this_function->first_asm;
 #ifdef DBUG
+	if(this_bb == NULL)fprintf(stderr," this_bb = NULL\n");
+	if(loop_asm == NULL)fprintf(stderr," loop_asm = NULL\n");
 	fprintf(stderr," first_bb address = 0x%"PRIx64", loop_asm address = 0x%"PRIx64"\n",this_bb->address, loop_asm->address);
 #endif
 	k = 0;
@@ -4474,7 +4614,7 @@ func_asm(pointer_data * global_func_list, int index)
 	while((k < bb_count) && (loop_asm != NULL) && (this_bb != NULL))
 		{
 #ifdef DBUG
-		fprintf(stderr,"%d, pointers address, src_line, bb text %p, %p, %p\n",k+1,&(this_bb->address), &(this_bb->source_line), &(this_bb->text));
+		fprintf(stderr,"%d, pointers address, src_line, bb text %p, %p, %p",k+1,&(this_bb->address), &(this_bb->source_line), &(this_bb->text));
 		fprintf(stderr," address 0x%"PRIx64"\n",this_bb->address);
 		fprintf(stderr," line %d\n",this_bb->source_line);
 		text_len = strlen(this_bb->text);

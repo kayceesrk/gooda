@@ -36,6 +36,7 @@ int util_dbg_flag =0;
 char vmlinux[]="/vmlinux";
 int max_print=20;
 int print_rva=0;
+uint64_t fourk_align=0xFFFFFFFFFFFFF000UL;
 
 mmap_struc_ptr 
 mmap_copy(mmap_struc_ptr mmap_orig, uint32_t new_pid, uint64_t new_time)
@@ -53,6 +54,7 @@ mmap_copy(mmap_struc_ptr mmap_orig, uint32_t new_pid, uint64_t new_time)
 	new_struc->addr = mmap_orig->addr;
 	new_struc->len = mmap_orig->len;
 	new_struc->pgoff = mmap_orig->pgoff;
+	new_struc->is_kernel = mmap_orig->is_kernel;
 	new_struc->filename = mmap_orig->filename;
 	new_struc->time = new_time;
 #ifdef DBUG
@@ -530,6 +532,8 @@ find_load_addr(char* this_path)
 {
 	char *local_name;
 	char local_bin_dir[] = "./binaries";
+	char local_linux[] = "/vmlinux";
+	int is_linux, linux_offset;
 	int local_bin_len=10;
 	int access_status;
 	int i,j,k,len,module_len,ret_val;
@@ -539,6 +543,7 @@ find_load_addr(char* this_path)
 #ifdef DBUG
 	fprintf(stderr," entring find_load_addr for module %s\n",this_path);
 #endif
+	linux_offset = 0x0;
 	bin_type = 0;
 //      strip off module name and create ./binaries/module_name string
 	module_len = strlen(this_path);
@@ -550,6 +555,8 @@ find_load_addr(char* this_path)
 		err(1,"failed to malloc local_name buffer in find_load_addr");
 	for(i=0; i<local_bin_len; i++)local_name[i] = local_bin_dir[i];
 	local_name[local_bin_len] =  '\0';
+	is_linux = 0;
+	if(strcmp(local_name, local_linux) == 0)is_linux = 1;
 #ifdef DBUG
 	fprintf(stderr," find_load_addr local_name for module %s\n",local_name);
 #endif
@@ -657,6 +664,10 @@ bind_mmap(mmap_struc_ptr this_mmap)
 		this_module->starting_ip = find_load_addr(this_module->path);
 		this_module->bin_type = bin_type;
 		this_module->time = this_mmap->time;
+		this_module->is_kernel = this_mmap->is_kernel;
+#ifdef DBUG
+	fprintf(stderr," kernel flag for %s = %d\n",this_module->path, this_module->is_kernel);
+#endif
 //	put it on the top of the process' module stack and return
 #ifdef DBUG
 		fprintf(stderr,"module path = %s, starting_ip = 0x%"PRIx64", mmap addr = 0x%"PRIx64", len = 0x%"PRIx64"\n",
@@ -667,6 +678,8 @@ bind_mmap(mmap_struc_ptr this_mmap)
 		this_process->first_module = this_module;
 
 		}
+//	if(this_module->is_kernel == 1)
+//		this_mmap->addr = this_module->starting_ip;
 	this_mmap->this_module = this_module;
 	return this_module;
 }
@@ -770,15 +783,19 @@ insert_mmap(mm_struc_ptr this_mm, char* filename, uint64_t new_time)
 		if( (strcmp(filename,kernel) == 0) || (strcmp(filename,kernel_new) == 0))
 			{
 			kern_mmap = 1;
-			if(this_struc->addr == 0)
-				{
-				this_struc->addr = this_mm->pgoff;
+//		kernel address can apprently be non zero now
+//			if(this_struc->addr == 0)
+//				{
+//         make sure pgoff is 4K aligned..this will not be the case if mmap is for "kernel_new"
+//		second fixup for kernels that insist on non zero value of ADDR
+				this_struc->addr = (this_mm->pgoff & fourk_align);
 				this_struc->len = this_mm->len - this_mm->pgoff;
-				}
+				this_struc->is_kernel = 1;
+//				}
 			base_kern_address = this_struc->addr;
 #ifdef DBUG
-			fprintf(stderr,"fixup for kernel_kallsysms, old len = 0x%"PRIx64", new len = 0x%"PRIx64", pgoff = 0x%"PRIx64", addr = 0x%"PRIx64"\n",
-				this_mm->len, this_struc->len, this_mm->pgoff, this_struc->addr);
+			fprintf(stderr,"fixup for kernel_kallsysms, old len = 0x%"PRIx64", new len = 0x%"PRIx64", pgoff = 0x%"PRIx64", addr = 0x%"PRIx64", kernel flag = %d\n",
+				this_mm->len, this_struc->len, this_mm->pgoff, this_struc->addr, this_struc->is_kernel);
 #endif
 			}
 		this_struc->filename = filename;
@@ -833,7 +850,7 @@ insert_mmap(mm_struc_ptr this_mm, char* filename, uint64_t new_time)
 		this_struc->previous = NULL;
 		}
 #ifdef DBUG
-	fprintf(stderr,"returning mmap struc for %s starting at 0x%"PRIx64", with time 0x%"PRIx64"\n",this_struc->filename,this_struc->addr,this_struc->time);
+	fprintf(stderr,"returning mmap struc for %s starting at 0x%"PRIx64", len = 0x%"PRIx64", with time 0x%"PRIx64"\n",this_struc->filename,this_struc->addr,this_struc->len,this_struc->time);
 #endif			
 	return this_struc;
 }
@@ -1540,6 +1557,10 @@ increment_module_struc(uint32_t pid, uint32_t tid, uint64_t ip, int this_event, 
 #endif
 
 	rva = ip - this_mmap->addr + this_module->starting_ip;
+#ifdef DBUG
+	fprintf(stderr,"RVA evaluation RVA = 0x%"PRIx64", IP = 0x%"PRIx64", mmap_addr = 0x%"PRIx64", elf_starting IP = 0x%"PRIx64"\n",
+		rva, ip,  this_mmap->addr, this_module->starting_ip);
+#endif
 /*
 	if(this_mmap->addr != four_hundredK)
 		{

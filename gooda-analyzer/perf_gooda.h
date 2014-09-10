@@ -64,6 +64,7 @@ typedef struct mmap_struc{
 	uint64_t	tsc_start;
 	uint64_t	tsc_end;
 	uint64_t	last_pgoff;
+	int		is_kernel;
 	}mmap_data;
 
 typedef struct lost_struc{

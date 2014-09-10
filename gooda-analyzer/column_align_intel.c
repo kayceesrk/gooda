@@ -50,6 +50,7 @@ char input_file_wsm[]="wsm.csv";
 char input_file_ivb[]="ivb.csv";
 char input_file_ivb_ep[]="ivb_ep.csv";
 char input_file_hsw[]="hsw.csv";
+char input_file_hsw_ep[]="hsw_ep.csv";
 int *fixed_index;
 //	ratio column names
 	char rs_empty_duration[]="Avg_RS_empty_duration",wrong_path[]="Wrong_path_cycles";
@@ -234,6 +235,9 @@ init_order_intel(int arch_val)
 			break;
 		case 8:
 			file = input_file_hsw;
+			break;
+		case 9:
+			file = input_file_hsw_ep;
 			break;
 		default:
 			err(1," init_order_intel called with invalid value fo arch_val");
@@ -913,8 +917,8 @@ branch_eval_intel(int* sample_count)
 				port_max = 0;
 				for(k=0; k < 6; k++)
 					{
-					port_val = (order[i+k+1].Period*order[i+k+1].multiplex/cycle_norm)*
-							sample_count[order[i+k+1].index];
+					port_val = (int) ((double)order[i+k+1].Period*(double)order[i+k+1].multiplex/cycle_norm)*
+							(double)sample_count[order[i+k+1].index];
 #ifdef DBUG
 				fprintf(stderr,"port index = %d\n",order[k+1+i].index-first_event_index);
 #endif
@@ -922,7 +926,7 @@ branch_eval_intel(int* sample_count)
 					}
 				cycles = sample_count[order[0].index];
 				if(cycles <= 0) cycles=1000000000;
-				if(port_mult*port_val/cycles > port_thresh)sample_count[i] = port_val;
+				if(port_mult*port_val/cycles > port_thresh)sample_count[order[i].index] = port_val;
 				eval_flag = 1;
 				}
 			else

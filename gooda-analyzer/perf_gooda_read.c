@@ -83,7 +83,7 @@ event_attr_ptr global_attrs;
 event_id_ptr global_event_ids;
 event_name_struc_ptr event_list;
 int family, model;
-char *arch, *cpu_desc, *local_arch;
+char *arch, *machine, *cpu_desc, *local_arch;
 char local_objdump[]="objdump";
 char objdump_x86[]="objdump";
 char objdump_arm32[]="arm-linux-gnueabi-objdump";
@@ -91,6 +91,12 @@ char objdump_ppc64[]="powerpc64-linux-gnueabi-objdump";
 char arch_arm32[]="armv7l";
 char arch_x86_64[]="x86_64";
 char arch_ppc64[]="ppc64";
+char arch_ppc64le[]="ppc64le";
+char machine_arm32[]="arm";
+char machine_x86_64[]="X86-64";
+char machine_ppc64[]="PowerPC64";
+char machine_ppc64le[]="PowerPC64";
+
 char* objdump_bin = "NO_OBJDUMP_AVAIL";
 int found_objdump=0;
 
@@ -2214,18 +2220,28 @@ read_arch(bufdesc_t *desc, struct perf_file_header *hdr)
 		arch_type_flag = 0;
 		objdump_bin = objdump_x86;
 		addr_mask = x86_addr_mask;
+		machine = machine_x86_64;
 		}
 	if(strcmp(arch,arch_arm32) == 0)
 		{
 		arch_type_flag = 1;
 		objdump_bin = objdump_arm32;
 		addr_mask = arm_addr_mask;
+		machine = machine_arm32;
 		}
 	if(strcmp(arch,arch_ppc64) == 0)
 		{
 		arch_type_flag = 2;
 		objdump_bin = objdump_ppc64;
 		addr_mask = ppc64_addr_mask;
+		machine = machine_ppc64;
+		}
+	if(strcmp(arch,arch_ppc64le) == 0)
+		{
+		arch_type_flag = 2;
+		objdump_bin = objdump_ppc64;
+		addr_mask = ppc64_addr_mask;
+		machine = machine_ppc64le;
 		}
 
 	ret = uname(&uts);
